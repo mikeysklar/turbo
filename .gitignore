@@ -1,0 +1,6 @@
+build/
+lib/turbo/
+*.mpy
+*.uf2
+__pycache__/
+.DS_Store
