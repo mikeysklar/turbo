@@ -30,6 +30,7 @@ four variants produced the same output checksum.
 | Metro RP2350 | Cortex-M33 | 150 | 6 371 | 4 547 | 2 380 | 261 | **24.4x** | 17.4x | flashed, UF2 |
 | Metro ESP32-S3 | Xtensa LX7 | 240 | 4 873 | 3 411 | 1 708 | 186 | **26.2x** | 18.3x | esp32-native branch |
 | Feather STM32F405 | Cortex-M4F | 168 | 8 121 | 5 204 | 2 779 | 416 | **19.5x** | 12.5x | flashed, SWD |
+| ESP32-C5 DevKitC | RISC-V rv32imc | 240 | 7 591 | 3 582 | 1 809 | 172 | **44.0x** | 20.8x | esp32-native-c5 branch |
 
 Bytecode columns come from the native-enabled firmware where one exists, else
 from the stock 10.3.0 release; the two differ by under 1% on every board except
@@ -41,6 +42,7 @@ Viper cost per inner-loop iteration, CPU cycles (measured time x clock / 407,644
 | Board | cycles / iteration |
 |---|---|
 | Metro RP2350 | 96 |
+| ESP32-C5 DevKitC | 101 |
 | Metro ESP32-S3 | 110 |
 | Metro RP2040 | 118 |
 | Metro ESP32-S2 | 121 |
