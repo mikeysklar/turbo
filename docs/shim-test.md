@@ -20,10 +20,10 @@ Every path must produce checksum 407644.
 | Metro M4 AirLift | 10.3.0 stock | `None` | `/src/pixels.py` | 407644 | 6789 |
 | Metro ESP32-S2 | 10.3.0 stock | `None` | `/src/pixels.py` | 407644 | 4346 |
 | Metro ESP32-S2 | esp32-native branch | `xtensawin` | `/src/pixels.py` (no dir for arch) | 407644 | 4347 |
-| Metro ESP32-S3 | | | not run: board held by the ESP32 branch work | | |
+| Metro ESP32-S3 | esp32-native branch (fixed) | `xtensawin` | `/lib/turbo/xtensawin/pixels.mpy` | 407644 | 186 |
 
-All three shim branches are covered: arch dir present, no arch reported, arch
-reported but no directory. Speedups match the farm report within a few percent
+All three shim branches are covered: arch dir present (ARM and xtensawin), no
+arch reported, and arch reported but no directory (S2 on the branch firmware). Speedups match the farm report within a few percent
 (the shim adds one `os.stat` and a `sys.path` insert at import).
 
 `turbo_cli.py bench` on the two RP2 boards, 5 trials, all variants checksum
@@ -65,3 +65,34 @@ run on hardware yet. A stale source (edited after `build`) makes `pack` exit 1.
 
 Board state after: RP2350 on the CI turbo firmware with this project, not the
 farm idle sketch. Backup: `bravo:~/turbo/backup-rp2350-20260904-181024/`.
+
+## ESP32-S3 recovery and compiled run, 2026-09-05
+
+The farm S3 had been left wedged by the first ESP32 native build (commit
+`4f51255`, before the pointer-bit fix), which hard-faulted on the first native
+call and left the board presenting only its USB-Serial-JTAG device, silent, not
+reachable by REPL or by esptool's auto download-mode entry.
+
+Recovery: power cycle with `-r 80 -w 300`, then a physical BOOT-button press to
+force ROM download mode. Once esptool connected, the fixed build's `firmware.uf2`
+(commit `4484b98`, the `MICROPY_MAKE_POINTER_CALLABLE` fix) was installed the
+correct way for this board, dragged onto the TinyUF2 `METROS3BOOT` volume, not
+flashed at `0x0`. CircuitPython came back, formatted CIRCUITPY on first boot,
+and the fix verified on-board:
+
+```
+sys.implementation._mpy = 11014  (arch id 10, xtensawin)
+@micropython.viper  f(7)   -> 22     (hard-faulted before the fix)
+@micropython.native g(100) -> 4950
+```
+
+xtensawin `pixels.mpy` built with `turbo_cli.py build --arch xtensawin` using
+the branch's mpy-cross, deployed with the shim, and run:
+
+```
+arch=xtensawin path=/lib/turbo/xtensawin file=/lib/turbo/xtensawin/pixels.mpy checksum=407644 ms=186
+```
+
+186 ms is the fastest cell on the farm, ahead of the RP2350's 281 ms, about 26x
+over the S3's 4873 ms float bytecode. Board state after: S3 on the fixed native
+build with the shim project on CIRCUITPY.
