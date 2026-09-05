@@ -1,8 +1,12 @@
 name: Build turbo firmware
 
-# Builds unmodified adafruit/circuitpython at a release tag with
-# CIRCUITPY_ENABLE_MPY_NATIVE=1 on the make line. No fork, no patches.
-# The flag turns on the Thumb native emitter that is already in every tree.
+# Two tracks.
+#   board: unmodified adafruit/circuitpython at a release tag with
+#          CIRCUITPY_ENABLE_MPY_NATIVE=1 on the make line. No fork, no patches.
+#          The flag turns on the Thumb native emitter already in every tree.
+#   esp32: the esp32-native branch of the mikeysklar/circuitpython fork, which
+#          adds the Xtensa emitter, an executable-RAM allocator and the
+#          non-ARM pointer fix. Not a stock tag.
 
 on:
   workflow_dispatch:
@@ -11,12 +15,17 @@ on:
         description: CircuitPython tag to build
         required: true
         default: "10.3.0"
+      esp32_ref:
+        description: Fork branch for the ESP32 boards
+        required: true
+        default: "esp32-native"
   push:
     branches: [main]
     paths: [".github/workflows/firmware.yml"]
 
 env:
   CP_VERSION: ${{ inputs.cp_version || '10.3.0' }}
+  ESP32_REF: ${{ inputs.esp32_ref || 'esp32-native' }}
 
 jobs:
   board:
@@ -107,6 +116,7 @@ jobs:
             echo "port=${{ matrix.port }}"
             echo "arch=${{ matrix.arch }}"
             echo "cp_version=${CP_VERSION}"
+            echo "source=adafruit/circuitpython@${CP_VERSION}"
             echo "cp_commit=$(git rev-parse HEAD)"
             echo "gcc=$(arm-none-eabi-gcc -dumpfullversion)"
             echo "flags=CIRCUITPY_ENABLE_MPY_NATIVE=1"
@@ -126,11 +136,106 @@ jobs:
           name: mpy-cross-linux-${{ env.CP_VERSION }}
           path: mpy-cross/build/mpy-cross
 
+  # ESP32 boards build from the fork branch that carries the Xtensa emitter
+  # work. Same composite actions as CircuitPython's own CI; deps/external
+  # installs the IDF tools and puts the xtensa toolchain on PATH.
+  esp32:
+    runs-on: ubuntu-24.04
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - board: adafruit_metro_esp32s2
+            arch: xtensawin
+          - board: adafruit_metro_esp32s3
+            arch: xtensawin
+    steps:
+      - name: Check out mikeysklar/circuitpython@${{ env.ESP32_REF }}
+        uses: actions/checkout@v6
+        with:
+          repository: mikeysklar/circuitpython
+          ref: ${{ env.ESP32_REF }}
+          submodules: false
+          show-progress: false
+          fetch-depth: 1
+          persist-credentials: false
+
+      - name: Set up python
+        uses: actions/setup-python@v6
+        with:
+          python-version: 3.x
+
+      - name: Set up port
+        uses: ./.github/actions/deps/ports
+        with:
+          board: ${{ matrix.board }}
+          port: espressif
+
+      - name: Set up submodules
+        uses: ./.github/actions/deps/submodules
+        with:
+          target: ${{ matrix.board }}
+
+      - name: Set up external (IDF tools, python deps)
+        uses: ./.github/actions/deps/external
+        with:
+          port: espressif
+
+      - name: Versions
+        run: |
+          xtensa-esp-elf-gcc --version | head -1
+          python3 --version
+
+      - name: Build mpy-cross
+        run: make -C mpy-cross -j4
+
+      - name: Build ${{ matrix.board }} with CIRCUITPY_ENABLE_MPY_NATIVE=1
+        run: |
+          make -C ports/espressif BOARD=${{ matrix.board }} \
+               CIRCUITPY_ENABLE_MPY_NATIVE=1 -j4
+
+      - name: Verify the emitter and the exec allocator are in the image
+        run: |
+          elf=ports/espressif/build-${{ matrix.board }}/firmware.elf
+          n=$(xtensa-esp-elf-nm "$elf" | grep -c -E 'emit_native_xtensa|esp_native_code_commit' || true)
+          echo "native symbols: $n"
+          test "$n" -gt 0
+          grep -q '^# CONFIG_ESP_SYSTEM_MEMPROT is not set' ports/espressif/build-${{ matrix.board }}/esp-idf/sdkconfig
+
+      - name: Collect
+        run: |
+          out=out/${{ matrix.board }}
+          mkdir -p "$out"
+          b=ports/espressif/build-${{ matrix.board }}
+          for ext in uf2 bin; do
+            if [ -f "$b/firmware.$ext" ]; then
+              cp "$b/firmware.$ext" \
+                 "$out/adafruit-circuitpython-${{ matrix.board }}-turbo-${CP_VERSION}.$ext"
+            fi
+          done
+          {
+            echo "board=${{ matrix.board }}"
+            echo "port=espressif"
+            echo "arch=${{ matrix.arch }}"
+            echo "cp_version=${CP_VERSION}"
+            echo "source=mikeysklar/circuitpython@${ESP32_REF}"
+            echo "cp_commit=$(git rev-parse HEAD)"
+            echo "gcc=$(xtensa-esp-elf-gcc -dumpfullversion)"
+            echo "flags=CIRCUITPY_ENABLE_MPY_NATIVE=1"
+          } > "$out/BUILD.txt"
+          ls -l "$out"
+
+      - name: Upload firmware
+        uses: actions/upload-artifact@v7
+        with:
+          name: ${{ matrix.board }}
+          path: out/${{ matrix.board }}
+
   # Manual runs publish a release on this repo. Pushes that only touch the
   # workflow stay artifact-only so a CI tweak does not mint a release.
   release:
     if: github.event_name == 'workflow_dispatch'
-    needs: board
+    needs: [board, esp32]
     runs-on: ubuntu-24.04
     permissions:
       contents: write
@@ -158,16 +263,27 @@ jobs:
             esac
           done
           {
-            echo "CircuitPython ${CP_VERSION} built from the unmodified adafruit/circuitpython tag with \`CIRCUITPY_ENABLE_MPY_NATIVE=1\`."
-            echo "Same firmware as the Adafruit release, plus the native emitter. \`@micropython.native\` and \`@micropython.viper\` work, and \`mpy-cross -march=<arch>\` output loads."
+            echo "CircuitPython ${CP_VERSION} with the native emitter on. \`@micropython.native\` and \`@micropython.viper\` work, and \`mpy-cross -march=<arch>\` output loads."
             echo
-            echo "| Board | Arch | UF2 |"
-            echo "|---|---|---|"
-            for t in release/*-BUILD.txt; do
-              board=$(sed -n 's/^board=//p' "$t"); arch=$(sed -n 's/^arch=//p' "$t")
-              uf2=$(ls release/adafruit-circuitpython-${board}-turbo-*.uf2 | xargs -n1 basename)
-              echo "| $board | \`$arch\` | $uf2 |"
-            done
+            table() {
+              echo "| Board | Arch | UF2 |"
+              echo "|---|---|---|"
+              for t in release/*-BUILD.txt; do
+                grep -q "^source=$1" "$t" || continue
+                board=$(sed -n 's/^board=//p' "$t"); arch=$(sed -n 's/^arch=//p' "$t")
+                uf2=$(ls release/adafruit-circuitpython-${board}-turbo-*.uf2 | xargs -n1 basename)
+                echo "| $board | \`$arch\` | $uf2 |"
+              done
+            }
+            echo "### ARM, stock tag"
+            echo "Unmodified adafruit/circuitpython at \`${CP_VERSION}\` with \`CIRCUITPY_ENABLE_MPY_NATIVE=1\`. Same firmware as the Adafruit release plus the emitter."
+            echo
+            table adafruit/circuitpython
+            echo
+            echo "### ESP32, fork branch"
+            echo "Built from \`mikeysklar/circuitpython@${ESP32_REF}\` (based on \`${CP_VERSION}\`), which adds the Xtensa emitter, an executable-RAM allocator, turns memory protection off, and fixes a non-ARM pointer bug. Not a stock tag."
+            echo
+            table mikeysklar/circuitpython
             echo
             echo "\`mpy-cross-linux-${CP_VERSION}\` is the matching compiler, Linux x86_64. Adafruit also publishes mpy-cross for every release."
             echo
