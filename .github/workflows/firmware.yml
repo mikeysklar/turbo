@@ -287,7 +287,9 @@ jobs:
             echo
             echo "\`mpy-cross-linux-${CP_VERSION}\` is the matching compiler, Linux x86_64. Adafruit also publishes mpy-cross for every release."
             echo
-            echo "CircuitPython commit: $(sed -n 's/^cp_commit=//p' release/*rp2350*-BUILD.txt). Toolchain: GCC $(sed -n 's/^gcc=//p' release/*rp2350*-BUILD.txt)."
+            arm_t=$(grep -l '^source=adafruit/circuitpython' release/*-BUILD.txt | head -1)
+            esp_t=$(grep -l '^source=mikeysklar/circuitpython' release/*-BUILD.txt | head -1)
+            echo "ARM: adafruit/circuitpython commit $(sed -n 's/^cp_commit=//p' $arm_t), GCC $(sed -n 's/^gcc=//p' $arm_t). ESP32: mikeysklar/circuitpython commit $(sed -n 's/^cp_commit=//p' $esp_t), GCC $(sed -n 's/^gcc=//p' $esp_t)."
           } > notes.md
           ls -l release; cat notes.md
 
