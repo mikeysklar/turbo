@@ -125,3 +125,64 @@ jobs:
         with:
           name: mpy-cross-linux-${{ env.CP_VERSION }}
           path: mpy-cross/build/mpy-cross
+
+  # Manual runs publish a release on this repo. Pushes that only touch the
+  # workflow stay artifact-only so a CI tweak does not mint a release.
+  release:
+    if: github.event_name == 'workflow_dispatch'
+    needs: board
+    runs-on: ubuntu-24.04
+    permissions:
+      contents: write
+    steps:
+      - name: Check out this repo
+        uses: actions/checkout@v6
+        with:
+          persist-credentials: false
+
+      - name: Download all artifacts
+        uses: actions/download-artifact@v8
+        with:
+          path: dist
+
+      - name: Assemble release files
+        run: |
+          mkdir -p release
+          for d in dist/*/; do
+            b=$(basename "$d")
+            case "$b" in
+              mpy-cross-*) cp "$d/mpy-cross" "release/$b"; chmod +x "release/$b" ;;
+              *) for f in "$d"/*; do
+                   case "$f" in *BUILD.txt) cp "$f" "release/$b-BUILD.txt" ;; *) cp "$f" release/ ;; esac
+                 done ;;
+            esac
+          done
+          {
+            echo "CircuitPython ${CP_VERSION} built from the unmodified adafruit/circuitpython tag with \`CIRCUITPY_ENABLE_MPY_NATIVE=1\`."
+            echo "Same firmware as the Adafruit release, plus the native emitter. \`@micropython.native\` and \`@micropython.viper\` work, and \`mpy-cross -march=<arch>\` output loads."
+            echo
+            echo "| Board | Arch | UF2 |"
+            echo "|---|---|---|"
+            for t in release/*-BUILD.txt; do
+              board=$(sed -n 's/^board=//p' "$t"); arch=$(sed -n 's/^arch=//p' "$t")
+              uf2=$(ls release/adafruit-circuitpython-${board}-turbo-*.uf2 | xargs -n1 basename)
+              echo "| $board | \`$arch\` | $uf2 |"
+            done
+            echo
+            echo "\`mpy-cross-linux-${CP_VERSION}\` is the matching compiler, Linux x86_64. Adafruit also publishes mpy-cross for every release."
+            echo
+            echo "CircuitPython commit: $(sed -n 's/^cp_commit=//p' release/*rp2350*-BUILD.txt). Toolchain: GCC $(sed -n 's/^gcc=//p' release/*rp2350*-BUILD.txt)."
+          } > notes.md
+          ls -l release; cat notes.md
+
+      - name: Create or update release cp-${{ env.CP_VERSION }}
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          tag="cp-${CP_VERSION}"
+          if gh release view "$tag" >/dev/null 2>&1; then
+            gh release edit "$tag" --notes-file notes.md
+          else
+            gh release create "$tag" --title "CircuitPython ${CP_VERSION} turbo" --notes-file notes.md --target "$GITHUB_SHA"
+          fi
+          gh release upload "$tag" release/* --clobber
