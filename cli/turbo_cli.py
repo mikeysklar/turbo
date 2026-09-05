@@ -5,6 +5,8 @@ bench the candidates on a board, install the winner, keep a manifest.
     turbo_cli.py build  SRC_DIR [--out lib/turbo] [--mpy-cross PATH] [--arch a,b]
     turbo_cli.py bench  MODULE --port TTY --mount CIRCUITPY [--out lib/turbo] [--trials N]
     turbo_cli.py check  SRC_DIR [--out lib/turbo]
+    turbo_cli.py pack   PROJECT --board B --firmware FW.uf2 [-o out.uf2]
+    turbo_cli.py pack   PROJECT --self-extract [-o code.py]
 
 Conventions: a module opts in with `from turbo import turbo` and `@turbo`,
 `@turbo.native` or `@turbo.viper` on functions. It may define `_turbo_bench()`
@@ -217,6 +219,55 @@ def cmd_check(a):
     return rc
 
 
+def cmd_pack(a):
+    """Stage the project, drop unpicked candidates, hand to folder2uf2."""
+    if shutil.which(a.folder2uf2) is None:
+        sys.exit("%s not found; pip install folder2uf2" % a.folder2uf2)
+    lib_turbo = os.path.join(a.project, "lib", "turbo")
+    if not os.path.isfile(os.path.join(a.project, "lib", "turbo.py")):
+        print("warning: no lib/turbo.py in project; the shim will not be on the board")
+    manifest = load_manifest(lib_turbo)
+    stale = []
+    for name, entry in manifest.items():
+        src = os.path.join(a.project, entry.get("src", ""))
+        if not os.path.isfile(src) or sha256(src) != entry.get("sha256"):
+            stale.append(name)
+    if stale and not a.force:
+        sys.exit("stale compiled modules (source changed since build): %s\n"
+                 "run `turbo build` again, or pass --force" % ", ".join(stale))
+
+    with tempfile.TemporaryDirectory() as td:
+        stage = os.path.join(td, "stage")
+        shutil.copytree(a.project, stage, ignore=shutil.ignore_patterns(
+            ".git", ".DS_Store", "__pycache__", "*.uf2"))
+        dropped = 0
+        st = os.path.join(stage, "lib", "turbo")
+        if os.path.isdir(st):
+            for arch in os.listdir(st):
+                d = os.path.join(st, arch)
+                if not os.path.isdir(d):
+                    continue
+                for f in os.listdir(d):
+                    if f.endswith(".native.mpy") or f.endswith(".viper.mpy"):
+                        os.remove(os.path.join(d, f))
+                        dropped += 1
+        if a.self_extract:
+            out = a.output or "turbo-code.py"
+            cmd = [a.folder2uf2, "--self-extract", "-o", out, stage]
+        else:
+            if not a.board or not a.firmware:
+                sys.exit("pack needs --board and --firmware, or --self-extract")
+            out = a.output or "%s-turbo.uf2" % a.board
+            cmd = [a.folder2uf2, "--board", a.board, "--combine", a.firmware, "-o", out, stage]
+        r = subprocess.run(cmd, capture_output=True, text=True)
+        if r.stdout.strip():
+            print(r.stdout.strip())
+        if r.returncode:
+            sys.exit(r.stderr.strip() or "folder2uf2 failed")
+    print("packed %s (%d bytes), %d candidate files dropped, %d compiled modules"
+          % (out, os.path.getsize(out), dropped, len(manifest)))
+
+
 def main():
     p = argparse.ArgumentParser(description=__doc__, formatter_class=argparse.RawDescriptionHelpFormatter)
     sub = p.add_subparsers(dest="cmd", required=True)
@@ -238,6 +289,16 @@ def main():
     c.add_argument("src")
     c.add_argument("--out", default="lib/turbo")
     c.set_defaults(fn=cmd_check)
+    k = sub.add_parser("pack", help="one UF2: turbo firmware + project files (or a self-extracting code.py)")
+    k.add_argument("project", help="folder with code.py, lib/, src/")
+    k.add_argument("--board", help="folder2uf2 board name, e.g. adafruit_metro_rp2350")
+    k.add_argument("--firmware", help="turbo firmware .uf2 to combine with")
+    k.add_argument("-o", "--output")
+    k.add_argument("--self-extract", action="store_true",
+                   help="emit a self-extracting code.py instead; works on any port, no firmware included")
+    k.add_argument("--force", action="store_true", help="pack even if a compiled module is stale")
+    k.add_argument("--folder2uf2", default="folder2uf2")
+    k.set_defaults(fn=cmd_pack)
     a = p.parse_args()
     sys.exit(a.fn(a) or 0)
 
