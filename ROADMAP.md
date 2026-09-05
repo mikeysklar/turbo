@@ -8,6 +8,8 @@
 - [x] Clean failure modes: wrong-arch `.mpy` -> `ValueError`, oversized native
       code -> `MemoryError`, neither faults.
 - [x] Regression gate: 40/40 burn-set, pidigits unchanged.
+- [x] `analyze`: static triage of a project on the host, verdicts keyed to the
+      farm numbers, no board needed (docs/analyze.md).
 - [x] CI: one workflow builds all six boards and publishes a `cp-<tag>` release
       with a `.uf2` per board. ARM from the stock tag, ESP32-S2/S3 from the fork
       branch. Notes split by track and name both source commits.

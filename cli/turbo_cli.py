@@ -5,6 +5,7 @@ bench the candidates on a board, install the winner, keep a manifest.
     turbo_cli.py build  SRC_DIR [--out lib/turbo] [--mpy-cross PATH] [--arch a,b]
     turbo_cli.py bench  MODULE --port TTY --mount CIRCUITPY [--out lib/turbo] [--trials N]
     turbo_cli.py check  SRC_DIR [--out lib/turbo]
+    turbo_cli.py analyze SRC [--arch A | --board B] [--json]
     turbo_cli.py pack   PROJECT --board B --firmware FW.uf2 [-o out.uf2]
     turbo_cli.py pack   PROJECT --self-extract [-o code.py]
 
@@ -14,6 +15,7 @@ returning a comparable value; bench times it and rejects variants whose value
 differs from bytecode. The shim (lib/turbo.py) picks the arch dir at runtime.
 """
 import argparse
+import ast
 import hashlib
 import json
 import os
@@ -268,6 +270,301 @@ def cmd_pack(a):
           % (out, os.path.getsize(out), dropped, len(manifest)))
 
 
+# ---------------------------------------------------------------- analyze
+
+# Measured on the farm, docs/shim-test.md. No entry means no number is printed;
+# never interpolate a speedup for an arch we have not run.
+MEASURED = {
+    "armv6m":    {"viper": 19.7, "native": None, "board": "Metro RP2040"},
+    "armv7emsp": {"viper": 16.3, "native": None, "board": "Metro RP2350"},
+    "xtensawin": {"viper": 26.2, "native": 2.85, "board": "Metro ESP32-S3"},
+}
+BOARD_ARCH = {
+    "adafruit_metro_rp2040": "armv6m",
+    "adafruit_metro_rp2350": "armv7emsp",
+    "adafruit_feather_nrf52840_express": "armv7emsp",
+    "adafruit_feather_stm32f405_express": "armv7emsp",
+    "adafruit_metro_esp32s3": "xtensawin",
+}
+
+_INT_OPS = (ast.Add, ast.Sub, ast.Mult, ast.FloorDiv, ast.Mod,
+            ast.LShift, ast.RShift, ast.BitAnd, ast.BitOr, ast.BitXor)
+_BUFFERS = {"bytearray", "bytes", "array", "memoryview"}
+_IO_ROOTS = {"board", "digitalio", "analogio", "busio", "pwmio", "touchio", "rotaryio",
+             "countio", "neopixel", "displayio", "framebufferio", "terminalio",
+             "audiocore", "audiobusio", "audiopwmio", "storage", "microcontroller",
+             "usb_cdc", "usb_hid", "wifi", "socketpool", "ssl", "supervisor"}
+_SAFE_CALLS = {"len", "range", "int", "abs", "min", "max", "ord", "chr", "bool"}
+_STR_METHODS = {"join", "format", "split", "strip", "encode", "decode", "replace",
+                "startswith", "endswith", "upper", "lower"}
+_GROW = {"append", "extend", "insert", "pop", "remove", "add", "update", "setdefault"}
+_TRANSCENDENTAL = {"sin", "cos", "tan", "asin", "acos", "atan", "atan2", "exp", "log",
+                   "log2", "log10", "sqrt", "pow", "hypot", "degrees", "radians"}
+VERDICT_RANK = {"viper": 3, "fixed-point": 2, "native": 1, "skip": 0}
+
+
+def _dotted(node):
+    """'time.sleep' for an Attribute/Name chain, '' for anything else."""
+    if isinstance(node, ast.Name):
+        return node.id
+    if isinstance(node, ast.Attribute):
+        base = _dotted(node.value)
+        return base + "." + node.attr if base else ""
+    return ""
+
+
+def _uniq(seq):
+    out = []
+    for x in seq:
+        if x not in out:
+            out.append(x)
+    return out
+
+
+class _Signals(ast.NodeVisitor):
+    """Shape of one function body: loop depth, arithmetic kind, viper blockers."""
+
+    def __init__(self, fn):
+        self.names = {a.arg for a in fn.args.args}
+        self.buffers = set()
+        for n in ast.walk(fn):
+            if isinstance(n, (ast.Assign, ast.AugAssign, ast.For)):
+                tgts = n.targets if isinstance(n, ast.Assign) else [
+                    n.target if isinstance(n, ast.AugAssign) else n.target]
+                for t in tgts:
+                    for sub in ast.walk(t):
+                        if isinstance(sub, ast.Name):
+                            self.names.add(sub.id)
+                val = getattr(n, "value", None)
+                if isinstance(val, ast.Call) and _dotted(val.func) in _BUFFERS:
+                    for t in tgts:
+                        if isinstance(t, ast.Name):
+                            self.buffers.add(t.id)
+        self.depth = self.max_depth = 0
+        self.int_ops = self.float_ops = self.index = 0
+        self.blockers, self.io, self.transcendental = [], [], []
+
+    def visit_For(self, node):
+        self.depth += 1
+        self.max_depth = max(self.max_depth, self.depth)
+        self.generic_visit(node)
+        self.depth -= 1
+
+    visit_While = visit_For
+    visit_AsyncFor = visit_For
+
+    def visit_BinOp(self, node):
+        if isinstance(node.op, ast.Div):
+            self.float_ops += 1
+        elif isinstance(node.op, ast.Pow):
+            self.blockers.append("** operator")
+        elif isinstance(node.op, _INT_OPS):
+            self.int_ops += 1
+        self.generic_visit(node)
+
+    def visit_AugAssign(self, node):
+        self.visit_BinOp(node)
+
+    def visit_Constant(self, node):
+        if isinstance(node.value, float):
+            self.float_ops += 1
+
+    def visit_Subscript(self, node):
+        base = node.value
+        if isinstance(base, ast.Name) and base.id in self.names:
+            self.index += 1
+        self.generic_visit(node)
+
+    def visit_Call(self, node):
+        name = _dotted(node.func)
+        root, leaf = name.split(".")[0], name.split(".")[-1]
+        if root in _IO_ROOTS or root.startswith("adafruit_"):
+            self.io.append(root)
+        elif name in ("time.sleep", "time.monotonic", "print"):
+            self.io.append(name)
+        elif root == "math":
+            self.float_ops += 1
+            if leaf in _TRANSCENDENTAL:
+                self.transcendental.append(name)
+        elif name == "float":
+            self.float_ops += 1
+        elif leaf in _STR_METHODS:
+            self.blockers.append("string work")
+        elif leaf in _GROW and self.depth:
+            self.blockers.append("%s() grows a container in the loop" % leaf)
+        elif name and name not in _SAFE_CALLS and name not in _BUFFERS:
+            self.blockers.append("calls %s()" % name)
+        self.generic_visit(node)
+
+    def visit_Attribute(self, node):
+        root = _dotted(node).split(".")[0]
+        if self.depth and (root == "self" or root in self.names):
+            self.blockers.append("object attribute %s" % _dotted(node))
+        self.generic_visit(node)
+
+    def visit_Try(self, node):
+        self.blockers.append("try/except")
+        self.generic_visit(node)
+
+    def visit_Yield(self, node):
+        self.blockers.append("generator")
+        self.generic_visit(node)
+
+    visit_YieldFrom = visit_Yield
+
+    def visit_JoinedStr(self, node):
+        self.blockers.append("f-string")
+        self.generic_visit(node)
+
+    def visit_ListComp(self, node):
+        if self.depth:
+            self.blockers.append("allocates in the loop")
+        self.generic_visit(node)
+
+    visit_DictComp = visit_ListComp
+    visit_SetComp = visit_ListComp
+
+    def visit_List(self, node):
+        if self.depth:
+            self.blockers.append("allocates in the loop")
+        self.generic_visit(node)
+
+    visit_Dict = visit_List
+
+
+def classify(s):
+    """(verdict, reason) for one function's signals. Conservative: anything we
+    cannot see through lands in a lower bucket, never a higher one."""
+    if s.max_depth == 0:
+        return "skip", "no loop"
+    if s.io:
+        return "skip", "I/O bound (%s)" % ", ".join(_uniq(s.io)[:3])
+    blockers = _uniq(s.blockers)
+    if s.transcendental:
+        return "native", "%s in the loop, stays object math" % _uniq(s.transcendental)[0]
+    if blockers:
+        return "native", "loop x%d, %s" % (s.max_depth, "; ".join(blockers[:2]))
+    if s.float_ops:
+        return "fixed-point", "float loop, converts to fixed point"
+    if s.int_ops == 0:
+        return "skip", "loop does no arithmetic"
+    return "viper", "loop x%d, integer math%s" % (
+        s.max_depth, ", buffer indexing" if s.index else "")
+
+
+def _deco_tier(fn):
+    for d in fn.decorator_list:
+        name = _dotted(d.func if isinstance(d, ast.Call) else d)
+        if name == "turbo" or name.startswith("turbo."):
+            return name
+    return None
+
+
+def _hot_callees(tree):
+    """Names called from inside some loop in this file. Weak hotness proxy."""
+    hot, seen = set(), set()
+
+    def walk(node, in_loop):
+        for child in ast.iter_child_nodes(node):
+            loop = in_loop or isinstance(node, (ast.For, ast.While, ast.AsyncFor))
+            if isinstance(child, ast.Call):
+                name = _dotted(child.func).split(".")[-1]
+                seen.add(name)
+                if loop:
+                    hot.add(name)
+            walk(child, loop)
+
+    walk(tree, False)
+    return hot, seen
+
+
+def analyze_file(path, arch):
+    with open(path) as f:
+        text = f.read()
+    tree = ast.parse(text, filename=path)
+    hot, called = _hot_callees(tree)
+    rows = []
+    for fn in ast.walk(tree):
+        if isinstance(fn, ast.AsyncFunctionDef):
+            rows.append({"function": fn.name, "line": fn.lineno, "verdict": "skip",
+                         "reason": "async function", "notes": [], "decorated": None})
+            continue
+        if not isinstance(fn, ast.FunctionDef):
+            continue
+        s = _Signals(fn)
+        s.generic_visit(fn)
+        verdict, reason = classify(s)
+        notes = []
+        m = MEASURED.get(arch) if arch else None
+        speed = m.get({"viper": "viper", "fixed-point": "viper", "native": "native"}.get(verdict))\
+            if m else None
+        if verdict in ("viper", "fixed-point", "native"):
+            if speed:
+                notes.append("similar loops ran %.1fx on %s%s"
+                             % (speed, m["board"],
+                                " AFTER a hand rewrite" if verdict == "fixed-point" else ""))
+            elif arch:
+                notes.append("no measurement for %s yet" % arch)
+            else:
+                notes.append("pass --arch or --board for measured numbers")
+        if verdict == "fixed-point":
+            notes.append("analyze will not do the rewrite; see "
+                         "examples/mandelbrot/src/pixels.py")
+        if verdict in ("viper", "fixed-point") and fn.name not in hot:
+            notes.append("no hot call site found in this file"
+                         if fn.name in called else "never called in this file")
+        tier = _deco_tier(fn)
+        if tier:
+            notes.append("already marked @%s" % tier)
+        rows.append({"function": fn.name, "line": fn.lineno, "verdict": verdict,
+                     "reason": reason, "notes": notes, "decorated": tier})
+    rows.sort(key=lambda r: (-VERDICT_RANK[r["verdict"]], r["line"]))
+    return rows
+
+
+def cmd_analyze(a):
+    arch = a.arch
+    if a.board:
+        arch = BOARD_ARCH.get(a.board)
+        if not arch:
+            return print("unknown board %s; known: %s, or use --arch"
+                         % (a.board, ", ".join(sorted(BOARD_ARCH)))) or 2
+    if arch and arch not in ARCH_ID:
+        return print("unknown arch %s; known: %s" % (arch, ", ".join(sorted(ARCH_ID)))) or 2
+    if os.path.isdir(a.src):
+        paths = sorted(os.path.join(r, f) for r, _, fs in os.walk(a.src) for f in fs
+                       if f.endswith(".py") and "lib" not in r.split(os.sep))
+    else:
+        paths = [a.src]
+    results = []
+    for p in paths:
+        try:
+            results.append((p, analyze_file(p, arch)))
+        except SyntaxError as e:
+            results.append((p, [{"function": "-", "line": e.lineno or 0, "verdict": "skip",
+                                 "reason": "syntax error: %s" % e.msg, "notes": [],
+                                 "decorated": None}]))
+    if a.json:
+        print(json.dumps([{"file": p, "arch": arch, **r} for p, rows in results for r in rows],
+                         indent=2))
+        return 0
+    print("turbo analyze reads shape only. It cannot see where time is actually")
+    print("spent: a perfect-looking function that runs once is 0x. Measure with bench.")
+    if arch:
+        m = MEASURED.get(arch)
+        print("target: %s%s" % (arch, " (%s)" % m["board"] if m else " (no farm data)"))
+    for p, rows in results:
+        if not rows:
+            continue
+        print("\n%s" % p)
+        for r in rows:
+            print("  %-16s %-12s %s" % (r["function"], r["verdict"], r["reason"]))
+            for n in r["notes"]:
+                print("  %-16s %-12s %s" % ("", "", n))
+    return 0
+
+
+
 def main():
     p = argparse.ArgumentParser(description=__doc__, formatter_class=argparse.RawDescriptionHelpFormatter)
     sub = p.add_subparsers(dest="cmd", required=True)
@@ -299,6 +596,12 @@ def main():
     k.add_argument("--force", action="store_true", help="pack even if a compiled module is stale")
     k.add_argument("--folder2uf2", default="folder2uf2")
     k.set_defaults(fn=cmd_pack)
+    z = sub.add_parser("analyze", help="static guess at which functions turbo can speed up")
+    z.add_argument("src", help="a .py file or a project folder")
+    z.add_argument("--arch", help="target arch, e.g. armv7emsp")
+    z.add_argument("--board", help="board id, resolves to an arch")
+    z.add_argument("--json", action="store_true")
+    z.set_defaults(fn=cmd_analyze)
     a = p.parse_args()
     sys.exit(a.fn(a) or 0)
 

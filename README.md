@@ -75,10 +75,13 @@ had ever enabled the native emitter.
 ## Layout
 
 - `shim/turbo.py` — the on-board `@turbo` decorator (identity fallback on stock firmware).
-- `cli/turbo_cli.py` — host tool: build, time variants, check outputs match.
+- `cli/turbo_cli.py` — host tool: `analyze` a project before you start,
+  `build` the `.mpy` per arch, `bench` the variants on a board and install the
+  winner, `check` the manifest is fresh, `pack` firmware and project into one UF2.
 - `examples/mandelbrot/` — the benchmark used for the numbers above.
-- `docs/` — conversion procedure, farm notes, applications, work log, and
-  `build.md`, the commands to run the workflow.
+- `docs/` — conversion procedure, farm notes, applications, work log,
+  `analyze.md`, the verdicts and what they cannot see, and `build.md`, the
+  commands to run the workflow.
 - `.github/workflows/firmware.yml` — builds all six boards and publishes the
   release. Two jobs: `board` (ARM, stock tag) and `esp32` (fork branch). The
   ESP32 job also checks the emitter and the executable-RAM allocator are linked
