@@ -26,9 +26,9 @@ four variants produced the same output checksum.
 | Metro RP2040 | Cortex-M0+ | 125 | 13 942 | 8 296 | 4 739 | 384 | **36.3x** | 21.6x | flashed, UF2 |
 | Metro M4 AirLift | Cortex-M4F | 120 | 11 221 | 6 768 | | | | | overflows flash by 12.8 KB |
 | Feather nRF52840 | Cortex-M4F | 64 | 20 788 | 14 697 | 7 445 | 781 | **26.6x** | 18.8x | flashed, SWD |
-| Metro ESP32-S2 | Xtensa LX7 | 240 | 7 438 | 4 328 | | | | | no Xtensa wiring in CircuitPython |
+| Metro ESP32-S2 | Xtensa LX7 | 240 | 7 438 | 4 328 | 2 110 | 206 | **36.1x** | 21.0x | esp32-native branch |
 | Metro RP2350 | Cortex-M33 | 150 | 6 371 | 4 547 | 2 380 | 261 | **24.4x** | 17.4x | flashed, UF2 |
-| Metro ESP32-S3 | Xtensa LX7 | 240 | 4 873 | 3 411 | | | | | no Xtensa wiring in CircuitPython |
+| Metro ESP32-S3 | Xtensa LX7 | 240 | 4 873 | 3 411 | 1 708 | 186 | **26.2x** | 18.3x | esp32-native branch |
 | Feather STM32F405 | Cortex-M4F | 168 | 8 121 | 5 204 | 2 779 | 416 | **19.5x** | 12.5x | flashed, SWD |
 
 Bytecode columns come from the native-enabled firmware where one exists, else
@@ -41,9 +41,16 @@ Viper cost per inner-loop iteration, CPU cycles (measured time x clock / 407,644
 | Board | cycles / iteration |
 |---|---|
 | Metro RP2350 | 96 |
+| Metro ESP32-S3 | 110 |
 | Metro RP2040 | 118 |
+| Metro ESP32-S2 | 121 |
 | Feather nRF52840 | 123 |
 | Feather STM32F405 | 171 |
+
+The two Xtensa rows were measured on the `esp32-native` branch, which wires up
+`MICROPY_EMIT_XTENSAWIN` and an executable-RAM allocator. The S3 native and
+viper cells are this farm's own 2026-09-05 run, 8 trials, spread under 2 ms,
+checksum 407644; the S2 cells come from the branch bring-up.
 
 Hand-written C would be about 20 cycles for this loop. The gap is the emitter,
 not the chips: it keeps one local in a register and spills the rest to the
@@ -105,7 +112,7 @@ Little or nothing:
 ## What it costs and what is in the way
 
 - **Flash.** The Thumb emitter adds 91 KB on RP2350 (1,835,520 to 1,926,656 bytes). The SAMD21 and SAMD51 farm builds do not fit, overflowing by 19.9 KB and 12.8 KB. They would need modules dropped.
-- **ARM only, today.** `CIRCUITPY_ENABLE_MPY_NATIVE` wires up Thumb and nothing else. The ESP32-S3, which has the fastest bytecode on the farm, cannot take it. Xtensa and RISC-V mappings would be a few lines in `py/circuitpy_mpconfig.h`, plus an executable-RAM allocator on ESP32; the emitters and `mpy-cross -march=xtensawin / rv32imc` already exist upstream.
+- **ARM in tree; Xtensa on a branch.** Stock `CIRCUITPY_ENABLE_MPY_NATIVE` wires up Thumb and nothing else. The `esp32-native` branch adds the Xtensa mapping in `py/circuitpy_mpconfig.h`, an executable-RAM allocator for the espressif port, and the non-ARM pointer fix; with it the ESP32-S2 and S3 run native and viper (the two Xtensa rows above). The emitters and `mpy-cross -march=xtensawin / rv32imc` already exist upstream. RISC-V (C3/C6/P4/C5) is compiled but not yet run on hardware.
 - **The import rule.** CircuitPython tries `name.py` before `name.mpy`. A source file next to its native `.mpy` silently shadows it. "Source beside binary" works only with the source off `sys.path`, e.g. `/src/`, or with a loader change.
 - **Per-arch files.** An `armv7emsp` `.mpy` refuses to load on an RP2040 (`incompatible .mpy arch`), which is correct but means one file per architecture family, or a bundle format.
 - **Firmware required for both decorators.** On stock firmware `@micropython.native` is a compile-time `SyntaxError` and a native `.mpy` is `ValueError: native code in .mpy unsupported`. The fallback `.py` must have the decorator removed.

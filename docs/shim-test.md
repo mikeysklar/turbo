@@ -96,3 +96,16 @@ arch=xtensawin path=/lib/turbo/xtensawin file=/lib/turbo/xtensawin/pixels.mpy ch
 186 ms is the fastest cell on the farm, ahead of the RP2350's 281 ms, about 26x
 over the S3's 4873 ms float bytecode. Board state after: S3 on the fixed native
 build with the shim project on CIRCUITPY.
+
+Full S3 tier sweep, 2026-09-05, same module three ways, 8 trials each, spread
+under 2 ms, checksum 407644 on all three:
+
+| Tier | S3 median | vs float bytecode |
+|---|---|---|
+| float bytecode (`mandel_flt`) | 4873 ms | 1.0x |
+| `@micropython.native` (`pixels.native.mpy`) | 1708 ms | 2.85x |
+| `@micropython.viper` (`pixels.mpy`) | 186 ms | 26.2x |
+
+Native turns the loop into machine code while values stay Python objects;
+viper makes the values machine words. The 2.85x / 26.2x split matches every
+ARM board on the farm.
