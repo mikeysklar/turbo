@@ -1,6 +1,6 @@
 # Turbo on the Farm
 
-CircuitPython 10.3.0, native emitter, 8-board HIL farm, 2026-09-04.
+CircuitPython 10.3.0, native emitter, HIL farm, 2026-09-04 to 09-05.
 
 "Turbo" is CircuitPython's dormant native emitter turned on. A function marked
 `@micropython.viper` is compiled by `mpy-cross` into machine code for the
@@ -114,7 +114,7 @@ Little or nothing:
 ## What it costs and what is in the way
 
 - **Flash.** The Thumb emitter adds 91 KB on RP2350 (1,835,520 to 1,926,656 bytes). The SAMD21 and SAMD51 farm builds do not fit, overflowing by 19.9 KB and 12.8 KB. They would need modules dropped.
-- **ARM in tree; Xtensa on a branch.** Stock `CIRCUITPY_ENABLE_MPY_NATIVE` wires up Thumb and nothing else. The `esp32-native` branch adds the Xtensa mapping in `py/circuitpy_mpconfig.h`, an executable-RAM allocator for the espressif port, and the non-ARM pointer fix; with it the ESP32-S2 and S3 run native and viper (the two Xtensa rows above). The emitters and `mpy-cross -march=xtensawin / rv32imc` already exist upstream. RISC-V (C3/C6/P4/C5) is compiled but not yet run on hardware.
+- **ARM in tree; Xtensa on a branch.** Stock `CIRCUITPY_ENABLE_MPY_NATIVE` wires up Thumb and nothing else. The `esp32-native` branch adds the Xtensa mapping in `py/circuitpy_mpconfig.h`, an executable-RAM allocator for the espressif port, and the non-ARM pointer fix; with it the ESP32-S2 and S3 run native and viper (the two Xtensa rows above). The emitters and `mpy-cross -march=xtensawin / rv32imc` already exist upstream. RISC-V is now proven on hardware too: the ESP32-C5 row above was built from `esp32-native` plus the `esp32c5-board` support and runs viper at 44x. The ESP32-P4 native firmware is built and verified but not yet flashed (its download USB drops with the OTG, so it needs a BOOT-strapped download or a JTAG debug flash).
 - **The import rule.** CircuitPython tries `name.py` before `name.mpy`. A source file next to its native `.mpy` silently shadows it. "Source beside binary" works only with the source off `sys.path`, e.g. `/src/`, or with a loader change.
 - **Per-arch files.** An `armv7emsp` `.mpy` refuses to load on an RP2040 (`incompatible .mpy arch`), which is correct but means one file per architecture family, or a bundle format.
 - **Firmware required for both decorators.** On stock firmware `@micropython.native` is a compile-time `SyntaxError` and a native `.mpy` is `ValueError: native code in .mpy unsupported`. The fallback `.py` must have the decorator removed.
