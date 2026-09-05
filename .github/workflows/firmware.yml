@@ -1,0 +1,127 @@
+name: Build turbo firmware
+
+# Builds unmodified adafruit/circuitpython at a release tag with
+# CIRCUITPY_ENABLE_MPY_NATIVE=1 on the make line. No fork, no patches.
+# The flag turns on the Thumb native emitter that is already in every tree.
+
+on:
+  workflow_dispatch:
+    inputs:
+      cp_version:
+        description: CircuitPython tag to build
+        required: true
+        default: "10.3.0"
+  push:
+    branches: [main]
+    paths: [".github/workflows/firmware.yml"]
+
+env:
+  CP_VERSION: ${{ inputs.cp_version || '10.3.0' }}
+
+jobs:
+  board:
+    runs-on: ubuntu-24.04
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - board: adafruit_metro_rp2040
+            port: raspberrypi
+            arch: armv6m
+          - board: adafruit_metro_rp2350
+            port: raspberrypi
+            arch: armv7emsp
+          - board: feather_nrf52840_express
+            port: nordic
+            arch: armv7emsp
+          - board: feather_stm32f405_express
+            port: stm
+            arch: armv7emsp
+    steps:
+      # CircuitPython goes at the workspace root so its own composite actions
+      # (./.github/actions/...) resolve, same as its CI.
+      - name: Check out CircuitPython ${{ env.CP_VERSION }}
+        uses: actions/checkout@v6
+        with:
+          repository: adafruit/circuitpython
+          ref: ${{ env.CP_VERSION }}
+          submodules: false
+          show-progress: false
+          fetch-depth: 1
+          persist-credentials: false
+
+      - name: Set up python
+        uses: actions/setup-python@v6
+        with:
+          python-version: 3.x
+
+      - name: Set up port
+        uses: ./.github/actions/deps/ports
+        with:
+          board: ${{ matrix.board }}
+          port: ${{ matrix.port }}
+
+      - name: Set up submodules
+        uses: ./.github/actions/deps/submodules
+        with:
+          target: ${{ matrix.board }}
+
+      - name: Set up external (arm toolchain, python deps)
+        uses: ./.github/actions/deps/external
+        with:
+          port: ${{ matrix.port }}
+
+      - name: Versions
+        run: |
+          arm-none-eabi-gcc --version | head -1
+          python3 --version
+
+      - name: Build mpy-cross
+        run: make -C mpy-cross -j4
+
+      - name: Build ${{ matrix.board }} with CIRCUITPY_ENABLE_MPY_NATIVE=1
+        run: |
+          make -C ports/${{ matrix.port }} BOARD=${{ matrix.board }} \
+               CIRCUITPY_ENABLE_MPY_NATIVE=1 -j4
+
+      - name: Verify the emitter is in the image
+        run: |
+          elf=ports/${{ matrix.port }}/build-${{ matrix.board }}/firmware.elf
+          n=$(arm-none-eabi-nm "$elf" | grep -c -E 'emit_native_thumb|asm_thumb_|mp_native_relocate' || true)
+          echo "native emitter symbols: $n"
+          test "$n" -gt 0
+
+      - name: Collect
+        run: |
+          out=out/${{ matrix.board }}
+          mkdir -p "$out"
+          b=ports/${{ matrix.port }}/build-${{ matrix.board }}
+          for ext in uf2 bin hex; do
+            if [ -f "$b/firmware.$ext" ]; then
+              cp "$b/firmware.$ext" \
+                 "$out/adafruit-circuitpython-${{ matrix.board }}-turbo-${CP_VERSION}.$ext"
+            fi
+          done
+          {
+            echo "board=${{ matrix.board }}"
+            echo "port=${{ matrix.port }}"
+            echo "arch=${{ matrix.arch }}"
+            echo "cp_version=${CP_VERSION}"
+            echo "cp_commit=$(git rev-parse HEAD)"
+            echo "gcc=$(arm-none-eabi-gcc -dumpfullversion)"
+            echo "flags=CIRCUITPY_ENABLE_MPY_NATIVE=1"
+          } > "$out/BUILD.txt"
+          ls -l "$out"
+
+      - name: Upload firmware
+        uses: actions/upload-artifact@v7
+        with:
+          name: ${{ matrix.board }}
+          path: out/${{ matrix.board }}
+
+      - name: Upload mpy-cross
+        if: matrix.board == 'adafruit_metro_rp2350'
+        uses: actions/upload-artifact@v7
+        with:
+          name: mpy-cross-linux-${{ env.CP_VERSION }}
+          path: mpy-cross/build/mpy-cross
