@@ -8,10 +8,27 @@ but the build flag that turns them on (`CIRCUITPY_ENABLE_MPY_NATIVE=1`) is wired
 for ARM Thumb only. This repo pursues two tracks:
 
 - **ARM, no patches.** The Thumb emitter is in every tree. Building a stock
-  release tag with the flag on is enough. `.github/workflows/firmware.yml`
-  builds RP2040, RP2350, nRF52840 and STM32F405 that way.
+  release tag with the flag on is enough.
 - **Non-ARM, via a fork.** Xtensa and RISC-V need real firmware changes. Those
-  live on the `esp32-native` branch of the CircuitPython fork, not here.
+  live on the `esp32-native` branch of the CircuitPython fork.
+
+One workflow, `.github/workflows/firmware.yml`, builds both tracks and
+publishes a GitHub release per CircuitPython tag with a `.uf2` for every board.
+ARM boards come from the stock tag, ESP32 boards from the fork branch, and the
+release notes say which is which.
+
+## Get the firmware
+
+Grab the `.uf2` for your board from the latest `cp-<version>` release, or from
+the command line:
+
+```sh
+gh release download cp-10.3.0 -R mikeysklar/turbo -p '*metro_esp32s3*.uf2'
+```
+
+Every release also ships a matching `mpy-cross` for Linux and a `BUILD.txt`
+per board recording the exact source commit, toolchain and flags.
+[docs/build.md](docs/build.md) has the commands to build a new tag.
 
 ## Status
 
@@ -20,15 +37,15 @@ about 36x faster than float bytecode on a Mandelbrot inner loop.
 
 **ESP32-C3 / C6 / P4 / C5 (RISC-V): compiled in, not yet run on hardware.**
 
-| Board | Arch | Native / viper | How |
-|---|---|---|---|
-| Metro RP2040 | Thumb (armv6m) | in-tree | flag only |
-| Metro RP2350 | Thumb (armv7em) | in-tree | flag only |
-| Feather nRF52840 | Thumb (armv7em) | in-tree | flag only |
-| Feather STM32F405 | Thumb (armv7em) | in-tree | flag only |
-| Metro ESP32-S2 | Xtensa LX7 | works | fork branch |
-| Metro ESP32-S3 | Xtensa LX7 | works | fork branch |
-| ESP32-C3/C6/P4/C5 | RISC-V | untested | fork branch |
+| Board | Arch | Native / viper | Source | In release |
+|---|---|---|---|---|
+| Metro RP2040 | Thumb (armv6m) | in-tree | stock tag | yes |
+| Metro RP2350 | Thumb (armv7em) | in-tree | stock tag | yes |
+| Feather nRF52840 | Thumb (armv7em) | in-tree | stock tag | yes |
+| Feather STM32F405 | Thumb (armv7em) | in-tree | stock tag | yes |
+| Metro ESP32-S2 | Xtensa LX7 | works | fork branch | yes |
+| Metro ESP32-S3 | Xtensa LX7 | works | fork branch | yes |
+| ESP32-C3/C6/P4/C5 | RISC-V | untested | fork branch | not yet |
 
 ## Mandelbrot, median of 8 runs (Metro ESP32-S2)
 
@@ -60,6 +77,11 @@ had ever enabled the native emitter.
 - `shim/turbo.py` — the on-board `@turbo` decorator (identity fallback on stock firmware).
 - `cli/turbo_cli.py` — host tool: build, time variants, check outputs match.
 - `examples/mandelbrot/` — the benchmark used for the numbers above.
-- `docs/` — conversion procedure, farm notes, applications, work log.
+- `docs/` — conversion procedure, farm notes, applications, work log, and
+  `build.md`, the commands to run the workflow.
+- `.github/workflows/firmware.yml` — builds all six boards and publishes the
+  release. Two jobs: `board` (ARM, stock tag) and `esp32` (fork branch). The
+  ESP32 job also checks the emitter and the executable-RAM allocator are linked
+  and that memory protection is off in the built sdkconfig.
 
 See [ROADMAP.md](ROADMAP.md) for what is left.
