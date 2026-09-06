@@ -149,6 +149,8 @@ jobs:
             arch: xtensawin
           - board: adafruit_metro_esp32s3
             arch: xtensawin
+          - board: adafruit_matrixportal_s3
+            arch: xtensawin
     steps:
       - name: Check out mikeysklar/circuitpython@${{ env.ESP32_REF }}
         uses: actions/checkout@v6
