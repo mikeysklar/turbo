@@ -43,6 +43,8 @@ about 36x faster than float bytecode on a Mandelbrot inner loop.
 | Metro RP2350 | Thumb (armv7em) | in-tree | stock tag | yes |
 | Feather nRF52840 | Thumb (armv7em) | in-tree | stock tag | yes |
 | Feather STM32F405 | Thumb (armv7em) | in-tree | stock tag | yes |
+| Metro M0 Express | Thumb (armv6m) | loader-only, no emitter | fork branch | not yet |
+| Metro M4 AirLift | Thumb (armv7em) | loader-only, no emitter | fork branch | not yet |
 | Metro ESP32-S2 | Xtensa LX7 | works | fork branch | yes |
 | Metro ESP32-S3 | Xtensa LX7 | works | fork branch | yes |
 | ESP32-C3/C6/P4/C5 | RISC-V | untested | fork branch | not yet |
