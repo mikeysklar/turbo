@@ -1,0 +1,218 @@
+diff --git a/ports/atmel-samd/boards/metro_m4_airlift_lite/mpconfigboard.h b/ports/atmel-samd/boards/metro_m4_airlift_lite/mpconfigboard.h
+index f29f0e192b..233b2f1029 100644
+--- a/ports/atmel-samd/boards/metro_m4_airlift_lite/mpconfigboard.h
++++ b/ports/atmel-samd/boards/metro_m4_airlift_lite/mpconfigboard.h
+@@ -33,3 +33,7 @@
+ // USB is always used internally so skip the pin objects for it.
+ #define IGNORE_PIN_PA24     1
+ #define IGNORE_PIN_PA25     1
++
++// Loader-only native: run host-compiled native/viper .mpy without the on-board
++// emitter, so the firmware still fits in flash. See docs/loader-only-samd.md.
++#define MICROPY_LOAD_NATIVE (1)
+diff --git a/py/bc.c b/py/bc.c
+index 4caa022e3d..ebea5f0a05 100644
+--- a/py/bc.c
++++ b/py/bc.c
+@@ -336,7 +336,7 @@ void mp_setup_code_state(mp_code_state_t *code_state, size_t n_args, size_t n_kw
+     mp_setup_code_state_helper(code_state, n_args, n_kw, args);
+ }
+ 
+-#if MICROPY_EMIT_NATIVE
++#if MICROPY_EMIT_NATIVE || MICROPY_LOAD_NATIVE
+ // On entry code_state should be allocated somewhere (stack/heap) and
+ // contain the following valid entries:
+ //    - code_state->fun_bc should contain a pointer to the function object
+diff --git a/py/emitglue.c b/py/emitglue.c
+index c6ad3e3bc3..672f0cb5cf 100644
+--- a/py/emitglue.c
++++ b/py/emitglue.c
+@@ -119,8 +119,14 @@ void mp_emit_glue_assign_native(mp_raw_code_t *rc, mp_raw_code_kind_t kind, cons
+     // Flush D-cache, so the code emitted is stored in RAM.
+     MP_HAL_CLEAN_DCACHE(fun_data, fun_len);
+     // Invalidate I-cache, so the newly-created code is reloaded from RAM.
++    // CIRCUITPY-CHANGE: let a port supply the I-cache invalidate (Zephyr does
++    // not expose CMSIS SCB_* cleanly); fall back to CMSIS otherwise.
++    #if defined(MP_HAL_INVALIDATE_ICACHE)
++    MP_HAL_INVALIDATE_ICACHE();
++    #else
+     SCB_InvalidateICache();
+     #endif
++    #endif
+     #elif MICROPY_EMIT_ARM
+     #if (defined(__linux__) && defined(__GNUC__)) || __ARM_ARCH == 7
+     __builtin___clear_cache((void *)fun_data, (char *)fun_data + fun_len);
+@@ -219,7 +225,7 @@ mp_obj_t mp_make_function_from_proto_fun(mp_proto_fun_t proto_fun, const mp_modu
+     // make the function, depending on the raw code kind
+     mp_obj_t fun;
+     switch (rc->kind) {
+-        #if MICROPY_EMIT_NATIVE
++        #if MICROPY_EMIT_NATIVE || MICROPY_LOAD_NATIVE
+         case MP_CODE_NATIVE_PY:
+             fun = mp_obj_new_fun_native(def_args, rc->fun_data, context, rc->children);
+             // Check for a generator function, and if so change the type of the object
+diff --git a/py/mpconfig.h b/py/mpconfig.h
+index 0e440066d7..63b0246f0c 100644
+--- a/py/mpconfig.h
++++ b/py/mpconfig.h
+@@ -544,7 +544,13 @@ typedef uint64_t mp_uint_t;
+ #define MICROPY_EMIT_INLINE_ASM (MICROPY_EMIT_INLINE_THUMB || MICROPY_EMIT_INLINE_XTENSA || MICROPY_EMIT_INLINE_RV32)
+ 
+ // Convenience definition for whether any native or inline assembler emitter is enabled
+-#define MICROPY_EMIT_MACHINE_CODE (MICROPY_EMIT_NATIVE || MICROPY_EMIT_INLINE_ASM)
++// MICROPY_LOAD_NATIVE: load and run host-compiled native .mpy without the
++// on-board emitter. Keeps the native runtime glue (fun table, relocation,
++// call path) while the emitter source files stay out of the build.
++#ifndef MICROPY_LOAD_NATIVE
++#define MICROPY_LOAD_NATIVE (0)
++#endif
++#define MICROPY_EMIT_MACHINE_CODE (MICROPY_EMIT_NATIVE || MICROPY_EMIT_INLINE_ASM || MICROPY_LOAD_NATIVE)
+ 
+ /*****************************************************************************/
+ /* Compiler configuration                                                    */
+diff --git a/py/nativeglue.c b/py/nativeglue.c
+index 3b072ba8c3..b166e5698e 100644
+--- a/py/nativeglue.c
++++ b/py/nativeglue.c
+@@ -43,7 +43,7 @@
+ #define DEBUG_printf(...) (void)0
+ #endif
+ 
+-#if MICROPY_EMIT_NATIVE
++#if MICROPY_EMIT_NATIVE || MICROPY_LOAD_NATIVE
+ 
+ int mp_native_type_from_qstr(qstr qst) {
+     switch (qst) {
+@@ -117,7 +117,7 @@ mp_obj_t mp_native_to_obj(mp_uint_t val, mp_uint_t type) {
+ 
+ #endif
+ 
+-#if MICROPY_EMIT_NATIVE && !MICROPY_DYNAMIC_COMPILER
++#if (MICROPY_EMIT_NATIVE || MICROPY_LOAD_NATIVE) && !MICROPY_DYNAMIC_COMPILER
+ 
+ #if !MICROPY_PY_BUILTINS_SET
+ mp_obj_t mp_obj_new_set(size_t n_args, mp_obj_t *items) {
+@@ -359,7 +359,7 @@ const mp_fun_table_t mp_fun_table = {
+     &mp_stream_write_obj,
+ };
+ 
+-#elif MICROPY_EMIT_NATIVE && MICROPY_DYNAMIC_COMPILER
++#elif (MICROPY_EMIT_NATIVE || MICROPY_LOAD_NATIVE) && MICROPY_DYNAMIC_COMPILER
+ 
+ const int mp_fun_table;
+ 
+diff --git a/py/nativeglue.h b/py/nativeglue.h
+index 01825ac60e..38bc9bbd42 100644
+--- a/py/nativeglue.h
++++ b/py/nativeglue.h
+@@ -184,9 +184,9 @@ typedef struct _mp_fun_table_t {
+     const mp_obj_fun_builtin_var_t *stream_write_obj;
+ } mp_fun_table_t;
+ 
+-#if (MICROPY_EMIT_NATIVE && !MICROPY_DYNAMIC_COMPILER) || MICROPY_ENABLE_DYNRUNTIME
++#if ((MICROPY_EMIT_NATIVE || MICROPY_LOAD_NATIVE) && !MICROPY_DYNAMIC_COMPILER) || MICROPY_ENABLE_DYNRUNTIME
+ extern const mp_fun_table_t mp_fun_table;
+-#elif MICROPY_EMIT_NATIVE && MICROPY_DYNAMIC_COMPILER
++#elif (MICROPY_EMIT_NATIVE || MICROPY_LOAD_NATIVE) && MICROPY_DYNAMIC_COMPILER
+ // In dynamic-compiler mode eliminate dependency on entries in mp_fun_table.
+ // This only needs to be an independent pointer, content doesn't matter.
+ extern const int mp_fun_table;
+diff --git a/py/objfun.c b/py/objfun.c
+index 34565cf633..b4a33c8185 100644
+--- a/py/objfun.c
++++ b/py/objfun.c
+@@ -139,7 +139,7 @@ qstr mp_obj_fun_get_name(mp_const_obj_t fun_in) {
+     const mp_obj_fun_bc_t *fun = MP_OBJ_TO_PTR(fun_in);
+     const byte *bc = fun->bytecode;
+ 
+-    #if MICROPY_EMIT_NATIVE
++    #if MICROPY_EMIT_NATIVE || MICROPY_LOAD_NATIVE
+     if (fun->base.type == &mp_type_fun_native || fun->base.type == &mp_type_native_gen_wrap) {
+         bc = mp_obj_fun_native_get_prelude_ptr(fun);
+     }
+@@ -448,7 +448,7 @@ mp_obj_t mp_obj_new_fun_bc(const mp_obj_t *def_args, const byte *code, const mp_
+ /******************************************************************************/
+ /* native functions                                                           */
+ 
+-#if MICROPY_EMIT_NATIVE
++#if MICROPY_EMIT_NATIVE || MICROPY_LOAD_NATIVE
+ 
+ // CIRCUITPY-CHANGE: PLACE_IN_ITCM
+ static mp_obj_t PLACE_IN_ITCM(fun_native_call)(mp_obj_t self_in, size_t n_args, size_t n_kw, const mp_obj_t *args) {
+@@ -483,7 +483,7 @@ MP_DEFINE_CONST_OBJ_TYPE(
+ /******************************************************************************/
+ /* viper functions                                                           */
+ 
+-#if MICROPY_EMIT_NATIVE
++#if MICROPY_EMIT_NATIVE || MICROPY_LOAD_NATIVE
+ 
+ static mp_obj_t fun_viper_call(mp_obj_t self_in, size_t n_args, size_t n_kw, const mp_obj_t *args) {
+     mp_cstack_check();
+diff --git a/py/objfun.h b/py/objfun.h
+index 4059343983..952311d000 100644
+--- a/py/objfun.h
++++ b/py/objfun.h
+@@ -53,7 +53,7 @@ typedef struct _mp_obj_fun_asm_t {
+ mp_obj_t mp_obj_new_fun_bc(const mp_obj_t *def_args, const byte *code, const mp_module_context_t *cm, struct _mp_raw_code_t *const *raw_code_table);
+ void mp_obj_fun_bc_attr(mp_obj_t self_in, qstr attr, mp_obj_t *dest);
+ 
+-#if MICROPY_EMIT_NATIVE
++#if MICROPY_EMIT_NATIVE || MICROPY_LOAD_NATIVE
+ 
+ static inline mp_obj_t mp_obj_new_fun_native(const mp_obj_t *def_args, const void *fun_data, const mp_module_context_t *mc, struct _mp_raw_code_t *const *child_table) {
+     mp_obj_fun_bc_t *o = (mp_obj_fun_bc_t *)MP_OBJ_TO_PTR(mp_obj_new_fun_bc(def_args, (const byte *)fun_data, mc, child_table));
+diff --git a/py/objgenerator.c b/py/objgenerator.c
+index de063d3845..ee65ed47b9 100644
+--- a/py/objgenerator.c
++++ b/py/objgenerator.c
+@@ -114,7 +114,7 @@ MP_DEFINE_CONST_OBJ_TYPE(
+ /******************************************************************************/
+ // native generator wrapper
+ 
+-#if MICROPY_EMIT_NATIVE
++#if MICROPY_EMIT_NATIVE || MICROPY_LOAD_NATIVE
+ 
+ // Based on mp_obj_gen_instance_t.
+ typedef struct _mp_obj_gen_instance_native_t {
+@@ -237,7 +237,7 @@ mp_vm_return_kind_t mp_obj_gen_resume(mp_obj_t self_in, mp_obj_t send_value, mp_
+ 
+     // If the generator is started, allow sending a value.
+     void *state_start = self->code_state.state - 1;
+-    #if MICROPY_EMIT_NATIVE
++    #if MICROPY_EMIT_NATIVE || MICROPY_LOAD_NATIVE
+     if (self->code_state.exc_sp_idx == MP_CODE_STATE_EXC_SP_IDX_SENTINEL) {
+         state_start = ((mp_obj_gen_instance_native_t *)self)->code_state.state - 1;
+     }
+@@ -259,7 +259,7 @@ mp_vm_return_kind_t mp_obj_gen_resume(mp_obj_t self_in, mp_obj_t send_value, mp_
+ 
+     mp_vm_return_kind_t ret_kind;
+ 
+-    #if MICROPY_EMIT_NATIVE
++    #if MICROPY_EMIT_NATIVE || MICROPY_LOAD_NATIVE
+     if (self->code_state.exc_sp_idx == MP_CODE_STATE_EXC_SP_IDX_SENTINEL) {
+         // A native generator.
+         typedef uintptr_t (*mp_fun_native_gen_t)(void *, mp_obj_t);
+@@ -297,7 +297,7 @@ mp_vm_return_kind_t mp_obj_gen_resume(mp_obj_t self_in, mp_obj_t send_value, mp_
+ 
+         case MP_VM_RETURN_EXCEPTION: {
+             self->code_state.ip = 0;
+-            #if MICROPY_EMIT_NATIVE
++            #if MICROPY_EMIT_NATIVE || MICROPY_LOAD_NATIVE
+             if (self->code_state.exc_sp_idx == MP_CODE_STATE_EXC_SP_IDX_SENTINEL) {
+                 *ret_val = ((mp_obj_gen_instance_native_t *)self)->code_state.state[0];
+             } else
+diff --git a/py/persistentcode.h b/py/persistentcode.h
+index 85668e608c..63425acc83 100644
+--- a/py/persistentcode.h
++++ b/py/persistentcode.h
+@@ -57,7 +57,9 @@
+     #define MPY_FEATURE_ARCH (MP_NATIVE_ARCH_X86)
+ #elif MICROPY_EMIT_X64
+     #define MPY_FEATURE_ARCH (MP_NATIVE_ARCH_X64)
+-#elif MICROPY_EMIT_THUMB
++// CIRCUITPY-CHANGE: a loader-only build (MICROPY_LOAD_NATIVE, no emitter)
++// must still advertise and accept the thumb arch it was compiled for.
++#elif MICROPY_EMIT_THUMB || (MICROPY_LOAD_NATIVE && defined(__thumb__))
+     #if defined(__thumb2__)
+         #if defined(__ARM_FP) && (__ARM_FP & 8) == 8
+             #define MPY_FEATURE_ARCH (MP_NATIVE_ARCH_ARMV7EMDP)
