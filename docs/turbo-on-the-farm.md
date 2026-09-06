@@ -10,7 +10,7 @@ hardware.
 
 | Headline | |
 |---|---|
-| **19 to 36x** | viper over the float Python people write, on six ARM boards |
+| **19 to 72x** | viper over the float Python people write, on seven ARM boards |
 | **1.8 to 2.9x** | `@micropython.native` on unchanged code, any Python |
 | **±1%** | change to ordinary bytecode speed with the flag on. It costs nothing until you use it |
 
@@ -22,7 +22,7 @@ four variants produced the same output checksum.
 
 | Board | Core | MHz | float bytecode | int bytecode | @native | @viper | viper / float | viper / int | Native build |
 |---|---|---|---|---|---|---|---|---|---|
-| Metro M0 Express | Cortex-M0+ | 48 | 72 741 | 44 130 | | | | | overflows flash by 19.9 KB |
+| Metro M0 Express | Cortex-M0+ | 48 | 72 741 | 44 130 | 23 408 | 1 014 | **71.7x** | 43.5x | loader-only, no emitter, 648 B free |
 | Metro RP2040 | Cortex-M0+ | 125 | 13 942 | 8 296 | 4 739 | 384 | **36.3x** | 21.6x | flashed, UF2 |
 | Metro M4 AirLift | Cortex-M4F | 120 | 11 221 | 6 623 | 3 536 | 431 | **26.0x** | 15.4x | loader-only, no emitter, 7 KB free |
 | Feather nRF52840 | Cortex-M4F | 64 | 20 788 | 14 697 | 7 445 | 781 | **26.6x** | 18.8x | flashed, SWD |
@@ -49,6 +49,7 @@ Viper cost per inner-loop iteration, CPU cycles (measured time x clock / 407,644
 | nRF54L15 DK | 110 |
 | nRF54LM20 DK | 110 |
 | Metro RP2040 | 118 |
+| Metro M0 Express | 119 |
 | Metro ESP32-S2 | 121 |
 | Feather nRF52840 | 123 |
 | Metro M4 AirLift | 127 |
@@ -124,7 +125,7 @@ Little or nothing:
 
 ## What it costs and what is in the way
 
-- **Flash.** The emitter does not fit on the two SAMD farm boards: the SAMD21 (M0 Express) overflows by 19,948 bytes, the SAMD51 (M4 AirLift) by 12,804. On the M4 the emitter plus the native `.mpy` loader together cost about 22.6 KB of flash under LTO. Two ways out: drop modules, or split the config so the board only loads and runs host-compiled native `.mpy` and does not carry the on-board emitter (`emitnative.c` + `asmthumb.c`, the bulk of that 22.6 KB). The load path (`persistentcode.c`, `mp_native_relocate`, `nativeglue.c`) is gated on `MICROPY_EMIT_MACHINE_CODE`, which is derived from the emitter, so the loader-only split needed a decoupling patch (new `MICROPY_LOAD_NATIVE` macro, 10 files). Done and proven on the M4: it links at 492,712 B with 7,000 B free, loads and runs host-compiled viper at 431 ms (26.0x over float), and rejects `@viper` from source with a `SyntaxError` because the emitter is not in the image. Full record and the exact patch in `loader-only-samd.md` / `loader-only-samd.patch`. The M0 (armv6m, 19.9 KB over) has not been tried yet.
+- **Flash.** The emitter does not fit on the two SAMD farm boards: the SAMD21 (M0 Express) overflows by 19,948 bytes, the SAMD51 (M4 AirLift) by 12,804. On the M4 the emitter plus the native `.mpy` loader together cost about 22.6 KB of flash under LTO. Two ways out: drop modules, or split the config so the board only loads and runs host-compiled native `.mpy` and does not carry the on-board emitter (`emitnative.c` + `asmthumb.c`, the bulk of that 22.6 KB). The load path (`persistentcode.c`, `mp_native_relocate`, `nativeglue.c`) is gated on `MICROPY_EMIT_MACHINE_CODE`, which is derived from the emitter, so the loader-only split needed a decoupling patch (new `MICROPY_LOAD_NATIVE` macro, 10 files). Done and proven on the M4: it links at 492,712 B with 7,000 B free, loads and runs host-compiled viper at 431 ms (26.0x over float), and rejects `@viper` from source with a `SyntaxError` because the emitter is not in the image. Then the M0: the armv6m loader costs 1,868 B over stock and missed by 128 B, so `safemode.py` (776 B) was dropped as well; it links at 253,048 B with 648 B free and runs host-compiled viper at 1,014 ms, 71.7x over its float bytecode, about 119 cycles per iteration, matching the RP2040's 118 on the same core. Both SAMD boards are now on the farm table. Full record and the exact patch in `loader-only-samd.md` / `loader-only-samd.patch`.
 - **ARM in tree; Xtensa on a branch.** Stock `CIRCUITPY_ENABLE_MPY_NATIVE` wires up Thumb and nothing else. The `esp32-native` branch adds the Xtensa mapping in `py/circuitpy_mpconfig.h`, an executable-RAM allocator for the espressif port, and the non-ARM pointer fix; with it the ESP32-S2 and S3 run native and viper (the two Xtensa rows above). The emitters and `mpy-cross -march=xtensawin / rv32imc` already exist upstream. RISC-V is now proven on hardware too: the ESP32-C5 row above was built from `esp32-native` plus the `esp32c5-board` support and runs viper at 44x. The ESP32-P4 native firmware is built and verified but not yet flashed (its download USB drops with the OTG, so it needs a BOOT-strapped download or a JTAG debug flash).
 - **Zephyr's MPU and cache (nRF54L).** The Zephyr M33 needs three things the bare-metal ARM ports do not. The build flag has to be read after the board's `circuitpython.toml` loads, because the zephyr board aliases return no `mpconfigboard` and it otherwise never reaches the compiler. The emitter's D-cache flush and I-cache invalidate, undefined in this port, map to Zephyr's cache API (`sys_cache_data_flush_range` / `sys_cache_instr_invd_all`). And `CONFIG_ARM_MPU` force-selects `SRAM_REGION_PERMISSIONS`, which marks the heap non-executable, so the first native call takes an MPU Instruction Access Violation; `CONFIG_ARM_MPU=n` leaves SRAM executable under the ARMv8-M default map, the analog of the ESP32 memprot-off. A dedicated executable MPU region is the proper fix. All three are on `mikeysklar/circuitpython@verify/nrf54l-all`.
 - **The import rule.** CircuitPython tries `name.py` before `name.mpy`. A source file next to its native `.mpy` silently shadows it. "Source beside binary" works only with the source off `sys.path`, e.g. `/src/`, or with a loader change.
@@ -152,7 +153,7 @@ acceleration is a file they can delete.
 
 - SiWx917 (Zephyr): native compiles, but a first run reported arch 0 and the console routing is unresolved.
 - ESP32-P4 (RISC-V): native firmware built and verified, flash blocked (its download USB drops with the OTG, so it needs a BOOT-strapped download or a JTAG debug flash).
-- SAMD51 (M4 AirLift) is done via the loader-only split (431 ms viper, 7 KB free). SAMD21 (M0 Express, armv6m, 19,948 B over) is next: same patch, `MICROPY_LOAD_NATIVE` on its board, see whether the armv6m loader fits.
+- Both SAMD boards are done via the loader-only split: M4 AirLift 431 ms viper with 7 KB free, M0 Express 1,014 ms viper with 648 B free (safemode.py dropped). Next for that patch: split the I-cache lines out of `emitglue.c` and decide whether to propose it upstream.
 - Find the STM32F405's extra 75 cycles.
 - Cortex-M4 boards other than the farm's have not been measured; the range above is a handful of boards, not a law.
 

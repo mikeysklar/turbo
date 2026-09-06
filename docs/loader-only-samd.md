@@ -105,9 +105,53 @@ The last row is the proof of the split: the board runs pre-compiled viper at
 full speed but cannot compile `@viper` from source, because the emitter is not
 in the image.
 
+## Result: it fits (Metro M0 Express, 2026-09-05)
+
+Same patch, `MICROPY_LOAD_NATIVE (1)` in the M0 board header, nothing else.
+
+| Build | Flash used | vs 253,696 B region |
+|---|---|---|
+| stock, no native | 251,956 B | fits, 1,740 B free |
+| full emitter (`CIRCUITPY_ENABLE_MPY_NATIVE=1`) | | overflow 19,948 |
+| loader-only, nothing dropped | 253,824 B | **overflow 128** |
+| **loader-only + `CIRCUITPY_SAFEMODE_PY = 0`** | **253,048 B** | **fits, 648 B free** |
+
+The armv6m loader costs 1,868 B over stock, 1,000 B less than on the M4 (smaller
+`mp_fun_table` call thunks, no async so no coro wrap). The SAMD21 default config
+already turns `MICROPY_PY_ASYNC_AWAIT` off and drops a long list of modules to
+fit 256 KB, so there was only 1,740 B of headroom to start with and the loader
+missed by 128 B. `safemode.py` support (776 B) is the least-used thing of that
+size and is already off on the internal-flash SAMD21 boards, so it went.
+
+One gotcha: after changing a `CIRCUITPY_*` flag in `mpconfigboard.mk` the
+incremental build linked stale objects and failed with an undefined
+`supervisor_safe_mode_reason_type`. The guards in `shared-bindings/supervisor`
+are correct; `rm -rf build-metro_m0_express` and a clean build fixed it.
+
+## Result: it runs (Metro M0 Express, 2026-09-05)
+
+Flashed over SWD (CMSIS-DAP `E6647C74039F6B2D`, `reset halt`, 2000 kHz, app base
+`0x2000`). Host-compiled `armv6m` `.mpy` files copied to CIRCUITPY.
+`sys.implementation._mpy` = 4870, arch 4 (armv6m).
+
+| Variant | checksum | ms (median) | vs int bytecode | vs float bytecode |
+|---|---|---|---|---|
+| int bytecode (source) | 581 | 43 281 | 1.0x | 1.7x |
+| `native .mpy` (host-compiled) | 581 | 23 408 | 1.8x | 3.1x |
+| `viper .mpy` (host-compiled) | 581 | **1 014** | **42.7x** | **71.7x** |
+| `@micropython.viper` from source | SyntaxError | | | emitter correctly absent |
+
+Float baseline 72,741 ms and the farm-table int figure 44,130 ms are the stock
+firmware numbers (today's int bytecode ran 2% faster, 2 trials). 1,014 ms at
+48 MHz is about 119 cycles per inner iteration, the same core as the RP2040's
+118, so the loaded armv6m code runs exactly as the emitter's would. This is the
+slowest board on the farm and the one that gains the most: a 73 s float loop
+becomes 1 s.
+
 ## Complete change list (for the PR)
 
-Ten files, 35 insertions, 17 deletions, against the `10.3.0` tag. The exact
+Twelve files, 43 insertions, 17 deletions, against the `10.3.0` tag (ten for
+the core patch plus the two SAMD board files). The exact
 diff is saved beside this file as `loader-only-samd.patch`. Everything is
 gated behind one new macro so it is a no-op for every existing build.
 
@@ -156,6 +200,10 @@ emitter selection stay out.
   `#define MICROPY_LOAD_NATIVE (1)`. Build with `CIRCUITPY_ENABLE_MPY_NATIVE`
   left off, so `MICROPY_EMIT_THUMB` is 0 and `emitnthumb.c` (which includes
   `emitnative.c`), `asmthumb.c` and `emitinlinethumb.c` compile to nothing.
+- `ports/atmel-samd/boards/metro_m0_express/mpconfigboard.h`: same
+  `#define MICROPY_LOAD_NATIVE (1)`.
+- `ports/atmel-samd/boards/metro_m0_express/mpconfigboard.mk`: add
+  `CIRCUITPY_SAFEMODE_PY = 0` to recover the last 128 B. Needs a clean build.
 
 **What was deliberately not changed**
 
@@ -186,6 +234,14 @@ openocd -c "source [find interface/cmsis-dap.cfg]" -c "adapter serial E6647C7403
   -c "transport select swd" -c "source [find target/atsame5x.cfg]" -c "adapter speed 500" \
   -c init -c "reset halt" -c "program firmware.bin 0x4000 verify reset" -c exit
 # test: copy armv7emsp mandel_vip.mpy / mandel_nat.mpy to CIRCUITPY, run over raw REPL
+
+# M0 Express: clean build after the .mk change, app base 0x2000
+rm -rf ports/atmel-samd/build-metro_m0_express
+make -C ports/atmel-samd BOARD=metro_m0_express -j8
+openocd -f interface/cmsis-dap.cfg -c "adapter serial E6647C74039F6B2D" -c "transport select swd" \
+  -f target/at91samdXX.cfg -c init -c "adapter speed 2000" -c "reset halt" \
+  -c "flash write_image erase firmware.bin 0x2000 bin" -c "reset run" -c shutdown
+# test: armv6m mandel_vip.mpy / mandel_nat.mpy (bravo:~/turbo/armv6m/)
 ```
 
 The UF2 route (1200-baud touch) reported "no medium" over SSH on this board;
@@ -197,7 +253,12 @@ SWD is the reliable path here.
 - [x] M4 links and fits flash (7,000 B free)
 - [x] M4 loads and runs host-compiled native and viper `.mpy` (checksum 581, viper 431 ms)
 - [x] Source `@viper` rejected, confirming the emitter is out
-- [x] Committed to `mikeysklar/circuitpython` branch `loader-only-native`
-- [ ] M0 Express (armv6m, 19,948 B over) tried
+- [x] Committed to `mikeysklar/circuitpython` branch `loader-only-native` (`af32cbcb36` core, `6fdfdcc7ca` M0 board)
+- [x] M0 Express fits (648 B free, safemode.py dropped) and runs host-compiled armv6m viper at 1,014 ms
 - [ ] Split the I-cache lines out of `emitglue.c` before an upstream PR
 - [ ] Decide upstreamability (clean single macro; a candidate for Adafruit)
+
+Board state after: both the M4 AirLift and the M0 Express are running the
+loader-only firmware with the test `.mpy` files on CIRCUITPY, not the farm idle
+sketch. Backups: `bravo:~/backup-m4-loaderonly-20260905-194241/`,
+`bravo:~/backup-m0-loaderonly-20260905-201331/`.

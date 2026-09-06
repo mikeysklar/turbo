@@ -1,3 +1,40 @@
+ ports/atmel-samd/boards/metro_m0_express/mpconfigboard.h      | 4 ++++
+ ports/atmel-samd/boards/metro_m0_express/mpconfigboard.mk     | 4 ++++
+ ports/atmel-samd/boards/metro_m4_airlift_lite/mpconfigboard.h | 4 ++++
+ py/bc.c                                                       | 2 +-
+ py/emitglue.c                                                 | 8 +++++++-
+ py/mpconfig.h                                                 | 8 +++++++-
+ py/nativeglue.c                                               | 6 +++---
+ py/nativeglue.h                                               | 4 ++--
+ py/objfun.c                                                   | 6 +++---
+ py/objfun.h                                                   | 2 +-
+ py/objgenerator.c                                             | 8 ++++----
+ py/persistentcode.h                                           | 4 +++-
+ 12 files changed, 43 insertions(+), 17 deletions(-)
+diff --git a/ports/atmel-samd/boards/metro_m0_express/mpconfigboard.h b/ports/atmel-samd/boards/metro_m0_express/mpconfigboard.h
+index 4e193a329f..c7f6e6562a 100644
+--- a/ports/atmel-samd/boards/metro_m0_express/mpconfigboard.h
++++ b/ports/atmel-samd/boards/metro_m0_express/mpconfigboard.h
+@@ -43,3 +43,7 @@
+ // USB is always used internally so skip the pin objects for it.
+ #define IGNORE_PIN_PA24     1
+ #define IGNORE_PIN_PA25     1
++
++// Loader-only native: run host-compiled native/viper .mpy without the on-board
++// emitter, so the firmware still fits in flash. See docs/loader-only-samd.md.
++#define MICROPY_LOAD_NATIVE (1)
+diff --git a/ports/atmel-samd/boards/metro_m0_express/mpconfigboard.mk b/ports/atmel-samd/boards/metro_m0_express/mpconfigboard.mk
+index d4801359cf..1d33757415 100644
+--- a/ports/atmel-samd/boards/metro_m0_express/mpconfigboard.mk
++++ b/ports/atmel-samd/boards/metro_m0_express/mpconfigboard.mk
+@@ -13,3 +13,7 @@ LONGINT_IMPL = MPZ
+ CIRCUITPY_CODEOP = 0
+ CIRCUITPY_ERRNO = 0
+ CIRCUITPY_RAINBOWIO = 0
++
++# Loader-only native (MICROPY_LOAD_NATIVE in mpconfigboard.h) needs ~130 B more
++# than the 256 KB part has; safemode.py is the least-used thing that size.
++CIRCUITPY_SAFEMODE_PY = 0
 diff --git a/ports/atmel-samd/boards/metro_m4_airlift_lite/mpconfigboard.h b/ports/atmel-samd/boards/metro_m4_airlift_lite/mpconfigboard.h
 index f29f0e192b..233b2f1029 100644
 --- a/ports/atmel-samd/boards/metro_m4_airlift_lite/mpconfigboard.h
