@@ -10,7 +10,7 @@ hardware.
 
 | Headline | |
 |---|---|
-| **19 to 72x** | viper over the float Python people write, on seven ARM boards |
+| **19 to 72x** | viper over the float Python people write, on eight ARM boards |
 | **1.8 to 2.9x** | `@micropython.native` on unchanged code, any Python |
 | **±1%** | change to ordinary bytecode speed with the flag on. It costs nothing until you use it |
 
@@ -33,6 +33,7 @@ four variants produced the same output checksum.
 | ESP32-C5 DevKitC | RISC-V rv32imc | 240 | 7 591 | 3 582 | 1 809 | 172 | **44.0x** | 20.8x | esp32-native-c5 branch |
 | nRF54L15 DK | Cortex-M33 | 128 | 10 233 | 5 328 | 2 836 | 349 | **29.3x** | 15.3x | verify/nrf54l-all branch, Zephyr |
 | nRF54LM20 DK | Cortex-M33 | 128 | 10 288 | 5 400 | 2 840 | 351 | **29.3x** | 15.4x | verify/nrf54l-all branch, Zephyr |
+| EK-RA8D1 | Cortex-M85 | 480 | 1 802 | 1 567 | 488 | 47 | **38.3x** | 33.3x | cp-1030 tree, Zephyr, D-cache on |
 
 Bytecode columns come from the native-enabled firmware where one exists, else
 from the stock 10.3.0 release; the two differ by under 1% on every board except
@@ -43,6 +44,7 @@ Viper cost per inner-loop iteration, CPU cycles (measured time x clock / 407,644
 
 | Board | cycles / iteration |
 |---|---|
+| EK-RA8D1 | 55 |
 | Metro RP2350 | 96 |
 | ESP32-C5 DevKitC | 101 |
 | Metro ESP32-S3 | 110 |
@@ -54,6 +56,12 @@ Viper cost per inner-loop iteration, CPU cycles (measured time x clock / 407,644
 | Feather nRF52840 | 123 |
 | Metro M4 AirLift | 127 |
 | Feather STM32F405 | 171 |
+
+The EK-RA8D1 row is with the M85 D-cache on (`CONFIG_CACHE_MANAGEMENT=y`, the
+`ra8-dcache.conf` overlay). The stock build ships with it off, and the GC heap
+is in external SDRAM, so every column is about 7x slower that way: float 13 073,
+int 10 992, native 1 868, viper 267 (48.9x, 315 cycles per iteration). The cache
+state has to be stated with any RA8 number.
 
 The two Xtensa rows were measured on the `esp32-native` branch, which wires up
 `MICROPY_EMIT_XTENSAWIN` and an executable-RAM allocator. The S3 native and
