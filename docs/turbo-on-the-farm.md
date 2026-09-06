@@ -10,7 +10,7 @@ hardware.
 
 | Headline | |
 |---|---|
-| **19 to 36x** | viper over the float Python people write, on four ARM boards |
+| **19 to 36x** | viper over the float Python people write, on six ARM boards |
 | **1.8 to 2.9x** | `@micropython.native` on unchanged code, any Python |
 | **±1%** | change to ordinary bytecode speed with the flag on. It costs nothing until you use it |
 
@@ -31,6 +31,8 @@ four variants produced the same output checksum.
 | Metro ESP32-S3 | Xtensa LX7 | 240 | 4 873 | 3 411 | 1 708 | 186 | **26.2x** | 18.3x | esp32-native branch |
 | Feather STM32F405 | Cortex-M4F | 168 | 8 121 | 5 204 | 2 779 | 416 | **19.5x** | 12.5x | flashed, SWD |
 | ESP32-C5 DevKitC | RISC-V rv32imc | 240 | 7 591 | 3 582 | 1 809 | 172 | **44.0x** | 20.8x | esp32-native-c5 branch |
+| nRF54L15 DK | Cortex-M33 | 128 | 10 233 | 5 328 | 2 836 | 349 | **29.3x** | 15.3x | verify/nrf54l-all branch, Zephyr |
+| nRF54LM20 DK | Cortex-M33 | 128 | 10 288 | 5 400 | 2 840 | 351 | **29.3x** | 15.4x | verify/nrf54l-all branch, Zephyr |
 
 Bytecode columns come from the native-enabled firmware where one exists, else
 from the stock 10.3.0 release; the two differ by under 1% on every board except
@@ -44,6 +46,8 @@ Viper cost per inner-loop iteration, CPU cycles (measured time x clock / 407,644
 | Metro RP2350 | 96 |
 | ESP32-C5 DevKitC | 101 |
 | Metro ESP32-S3 | 110 |
+| nRF54L15 DK | 110 |
+| nRF54LM20 DK | 110 |
 | Metro RP2040 | 118 |
 | Metro ESP32-S2 | 121 |
 | Feather nRF52840 | 123 |
@@ -53,6 +57,12 @@ The two Xtensa rows were measured on the `esp32-native` branch, which wires up
 `MICROPY_EMIT_XTENSAWIN` and an executable-RAM allocator. The S3 native and
 viper cells are this farm's own 2026-09-05 run, 8 trials, spread under 2 ms,
 checksum 407644; the S2 cells come from the branch bring-up.
+
+The two nRF54L rows are the Zephyr port (`zephyr-cp`), same Cortex-M33 core at
+128 MHz, both this farm's own 2026-09-05 run, 8 trials, spread under 2 ms,
+fixed-point checksum 581. They land at 110 cycles per iteration, in the same
+band as the ESP32-S3, so the emitter behaves identically on the Zephyr M33 once
+it is allowed to run. What it took to get there is in "what's in the way" below.
 
 Hand-written C would be about 20 cycles for this loop. The gap is the emitter,
 not the chips: it keeps one local in a register and spills the rest to the
@@ -113,8 +123,9 @@ Little or nothing:
 
 ## What it costs and what is in the way
 
-- **Flash.** The Thumb emitter adds 91 KB on RP2350 (1,835,520 to 1,926,656 bytes). The SAMD21 and SAMD51 farm builds do not fit, overflowing by 19.9 KB and 12.8 KB. They would need modules dropped.
+- **Flash.** The emitter does not fit on the two SAMD farm boards: the SAMD21 (M0 Express) overflows by 19,948 bytes, the SAMD51 (M4 AirLift) by 12,804. On the M4 the emitter plus the native `.mpy` loader together cost about 22.6 KB of flash under LTO. Two ways out: drop modules, or split the config so the board only loads and runs host-compiled native `.mpy` and does not carry the on-board emitter (`emitnative.c` + `asmthumb.c`, the bulk of that 22.6 KB). The load path (`persistentcode.c`, `mp_native_relocate`, `nativeglue.c`) is gated on `MICROPY_EMIT_MACHINE_CODE`, which is derived from the emitter, so the loader-only split needs a small decoupling patch. Under test on the M4.
 - **ARM in tree; Xtensa on a branch.** Stock `CIRCUITPY_ENABLE_MPY_NATIVE` wires up Thumb and nothing else. The `esp32-native` branch adds the Xtensa mapping in `py/circuitpy_mpconfig.h`, an executable-RAM allocator for the espressif port, and the non-ARM pointer fix; with it the ESP32-S2 and S3 run native and viper (the two Xtensa rows above). The emitters and `mpy-cross -march=xtensawin / rv32imc` already exist upstream. RISC-V is now proven on hardware too: the ESP32-C5 row above was built from `esp32-native` plus the `esp32c5-board` support and runs viper at 44x. The ESP32-P4 native firmware is built and verified but not yet flashed (its download USB drops with the OTG, so it needs a BOOT-strapped download or a JTAG debug flash).
+- **Zephyr's MPU and cache (nRF54L).** The Zephyr M33 needs three things the bare-metal ARM ports do not. The build flag has to be read after the board's `circuitpython.toml` loads, because the zephyr board aliases return no `mpconfigboard` and it otherwise never reaches the compiler. The emitter's D-cache flush and I-cache invalidate, undefined in this port, map to Zephyr's cache API (`sys_cache_data_flush_range` / `sys_cache_instr_invd_all`). And `CONFIG_ARM_MPU` force-selects `SRAM_REGION_PERMISSIONS`, which marks the heap non-executable, so the first native call takes an MPU Instruction Access Violation; `CONFIG_ARM_MPU=n` leaves SRAM executable under the ARMv8-M default map, the analog of the ESP32 memprot-off. A dedicated executable MPU region is the proper fix. All three are on `mikeysklar/circuitpython@verify/nrf54l-all`.
 - **The import rule.** CircuitPython tries `name.py` before `name.mpy`. A source file next to its native `.mpy` silently shadows it. "Source beside binary" works only with the source off `sys.path`, e.g. `/src/`, or with a loader change.
 - **Per-arch files.** An `armv7emsp` `.mpy` refuses to load on an RP2040 (`incompatible .mpy arch`), which is correct but means one file per architecture family, or a bundle format.
 - **Firmware required for both decorators.** On stock firmware `@micropython.native` is a compile-time `SyntaxError` and a native `.mpy` is `ValueError: native code in .mpy unsupported`. The fallback `.py` must have the decorator removed.
@@ -138,10 +149,11 @@ acceleration is a file they can delete.
 
 ## Next
 
-- Dev-hub boards: SiWx917, nRF54L15, nRF54L20 (ARM, via the Zephyr port's `enable_mpy_native`), ESP32-P4 and ESP32-C5 (RISC-V, need the `MICROPY_EMIT_RV32` mapping first).
-- Fit the emitter on SAMD21/SAMD51 by dropping modules, and measure what it costs.
+- SiWx917 (Zephyr): native compiles, but a first run reported arch 0 and the console routing is unresolved.
+- ESP32-P4 (RISC-V): native firmware built and verified, flash blocked (its download USB drops with the OTG, so it needs a BOOT-strapped download or a JTAG debug flash).
+- SAMD21/SAMD51: land the emitter by dropping modules or by the loader-only split above, and measure what it costs.
 - Find the STM32F405's extra 75 cycles.
-- Cortex-M4 boards other than the farm's have not been measured; the range above is four boards, not a law.
+- Cortex-M4 boards other than the farm's have not been measured; the range above is a handful of boards, not a law.
 
 Data, scripts and per-step notes: `work.log.md`, `turbo-conversion.md`,
 `applications.md`, and `bravo:~/turbo/`. Measured 2026-09-04.
