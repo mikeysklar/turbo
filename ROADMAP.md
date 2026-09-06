@@ -19,7 +19,9 @@
 
 ## Next
 
-- [ ] RISC-V (C3 / C6 / P4 / C5): build and run the RV32 path on hardware.
+- [x] RISC-V on hardware: ESP32-C5 runs native and viper (172 ms, 44x) on
+      `esp32-native-c5`.
+- [ ] RISC-V (C3 / C6 / P4): run the RV32 path on hardware.
 - [ ] Add the RISC-V boards to the workflow once the RV32 path is verified.
 - [ ] Loader-only on the Zephyr boards (nRF54L, EK-RA8D1) and the C5 branch.
 - [ ] Switch the firmware workflow to loader-only builds.

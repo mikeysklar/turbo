@@ -35,7 +35,10 @@ per board recording the exact source commit, toolchain and flags.
 **ESP32-S2 and ESP32-S3 (Xtensa): working, verified on hardware.** Viper is
 about 36x faster than float bytecode on a Mandelbrot inner loop.
 
-**ESP32-C3 / C6 / P4 / C5 (RISC-V): compiled in, not yet run on hardware.**
+**ESP32-C5 (RISC-V): working, verified on hardware.** Viper runs the same
+Mandelbrot loop at 172 ms, 44x over float bytecode, on the `esp32-native-c5`
+branch. **ESP32-C3 / C6 / P4: compiled in, not yet run on hardware** (the P4
+firmware is built and verified; flashing is blocked by its download USB).
 
 **Loader-only is the model (2026-09-06).** Turbo compiles on the host with
 `mpy-cross`, so the board needs the native `.mpy` loader and not the on-board
@@ -57,7 +60,8 @@ builds until the workflow is switched. Details in
 | EK-RA8D1 | Thumb (armv7emdp) | works, D-cache on | fork branch | not yet |
 | Metro ESP32-S2 | Xtensa LX7 | loader-only, no emitter | fork branch | emitter build |
 | Metro ESP32-S3 | Xtensa LX7 | loader-only, no emitter | fork branch | emitter build |
-| ESP32-C3/C6/P4/C5 | RISC-V | untested | fork branch | not yet |
+| ESP32-C5 DevKitC | RISC-V (rv32imc) | works | fork branch | not yet |
+| ESP32-C3/C6/P4 | RISC-V | untested | fork branch | not yet |
 
 ## Mandelbrot, median of 8 runs (Metro ESP32-S2)
 
