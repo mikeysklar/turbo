@@ -84,6 +84,7 @@ def save_manifest(out, m):
 
 def cmd_build(a):
     manifest = load_manifest(a.out)
+    rc = 0
     for fn in sorted(os.listdir(a.src)):
         if not fn.endswith(".py"):
             continue
@@ -95,7 +96,10 @@ def cmd_build(a):
             continue
         entry = manifest.setdefault(name, {})
         entry["src"] = os.path.relpath(path)
-        entry["sha256"] = sha256(path)
+        # The hash is written only after every arch has a fresh candidate (below);
+        # a failed build must leave `check` reporting STALE, not "fresh".
+        new_sha = sha256(path)
+        all_built = True
         for arch in a.arch.split(","):
             d = os.path.join(a.out, arch)
             os.makedirs(d, exist_ok=True)
@@ -114,13 +118,27 @@ def cmd_build(a):
                    "native" if isinstance(built.get("native"), int) else None
             arch_entry = entry.setdefault(arch, {})
             arch_entry["candidates"] = built
+            # Whatever happens, the previous binary's measurements describe a
+            # binary that no longer exists.
+            arch_entry["measured"] = False
+            arch_entry.pop("bench", None)
+            arch_entry.pop("speedup_vs_bytecode", None)
+            installed_path = os.path.join(d, name + ".mpy")
             if pick:
-                shutil.copyfile(os.path.join(d, "%s.%s.mpy" % (name, pick)),
-                                os.path.join(d, name + ".mpy"))
+                shutil.copyfile(os.path.join(d, "%s.%s.mpy" % (name, pick)), installed_path)
                 arch_entry["installed"] = pick
-                arch_entry["measured"] = arch_entry.get("measured", False)
+            else:
+                # Do not leave an old binary standing in for the new source.
+                if os.path.exists(installed_path):
+                    os.remove(installed_path)
+                arch_entry["installed"] = None
+                all_built = False
+                rc = 1
             print("%-14s %-10s %s -> installed %s" % (name, arch, built, pick))
+        if all_built:
+            entry["sha256"] = new_sha
     save_manifest(a.out, manifest)
+    return rc
 
 
 def board_exec(pyb, code, timeout=600):
