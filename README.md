@@ -37,17 +37,26 @@ about 36x faster than float bytecode on a Mandelbrot inner loop.
 
 **ESP32-C3 / C6 / P4 / C5 (RISC-V): compiled in, not yet run on hardware.**
 
+**Loader-only is the model (2026-09-06).** Turbo compiles on the host with
+`mpy-cross`, so the board needs the native `.mpy` loader and not the on-board
+emitter. `CIRCUITPY_LOAD_NATIVE=1` builds that: 2 to 3 KB over stock instead
+of 20 to 50 KB, same viper speed, and `@micropython.viper` from source is a
+`SyntaxError`. All eight farm boards run it (`loader-only-native` for ARM,
+`esp32-native` for Xtensa); the published releases still carry the emitter
+builds until the workflow is switched. Details in
+[docs/loader-only-samd.md](docs/loader-only-samd.md).
+
 | Board | Arch | Native / viper | Source | In release |
 |---|---|---|---|---|
-| Metro RP2040 | Thumb (armv6m) | in-tree | stock tag | yes |
-| Metro RP2350 | Thumb (armv7em) | in-tree | stock tag | yes |
-| Feather nRF52840 | Thumb (armv7em) | in-tree | stock tag | yes |
-| Feather STM32F405 | Thumb (armv7em) | in-tree | stock tag | yes |
+| Metro RP2040 | Thumb (armv6m) | loader-only, no emitter | fork branch | emitter build |
+| Metro RP2350 | Thumb (armv7em) | loader-only, no emitter | fork branch | emitter build |
+| Feather nRF52840 | Thumb (armv7em) | loader-only, no emitter | fork branch | emitter build |
+| Feather STM32F405 | Thumb (armv7em) | loader-only, no emitter | fork branch | emitter build |
 | Metro M0 Express | Thumb (armv6m) | loader-only, no emitter | fork branch | not yet |
 | Metro M4 AirLift | Thumb (armv7em) | loader-only, no emitter | fork branch | not yet |
 | EK-RA8D1 | Thumb (armv7emdp) | works, D-cache on | fork branch | not yet |
-| Metro ESP32-S2 | Xtensa LX7 | works | fork branch | yes |
-| Metro ESP32-S3 | Xtensa LX7 | works | fork branch | yes |
+| Metro ESP32-S2 | Xtensa LX7 | loader-only, no emitter | fork branch | emitter build |
+| Metro ESP32-S3 | Xtensa LX7 | loader-only, no emitter | fork branch | emitter build |
 | ESP32-C3/C6/P4/C5 | RISC-V | untested | fork branch | not yet |
 
 ## Mandelbrot, median of 8 runs (Metro ESP32-S2)

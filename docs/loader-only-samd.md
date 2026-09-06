@@ -1,8 +1,9 @@
-# Loader-only native `.mpy` on the SAMD boards
+# Loader-only native `.mpy` on the SAMD boards, then the whole farm
 
 Tracking the experiment to run host-compiled native `.mpy` on the two SAMD
 farm boards without carrying the on-board emitter, so the firmware fits in
-flash. Started 2026-09-05.
+flash. Started 2026-09-05. On 2026-09-06 it became the model for every board
+(see "All eight farm boards" at the end).
 
 ## The problem
 
@@ -247,6 +248,122 @@ openocd -f interface/cmsis-dap.cfg -c "adapter serial E6647C74039F6B2D" -c "tran
 The UF2 route (1200-baud touch) reported "no medium" over SSH on this board;
 SWD is the reliable path here.
 
+## All eight farm boards, 2026-09-06
+
+Decision from Phil and Limor (2026-09-06): drop the on-board emitter, keep the
+loader, keep viper. Turbo compiles on the host with `mpy-cross`; the board
+only ever loads `.mpy`. Viper is a typing mode inside the same code generator
+as `@native`, not the inline assembler, and it is where the 20 to 72x comes
+from. All three front ends (`@native`, `@viper`, `@micropython.asm_thumb`)
+leave the image in a loader-only build; the loader and `mp_fun_table` stay.
+
+### The flag
+
+`CIRCUITPY_LOAD_NATIVE ?= 0` in `py/circuitpy_mpconfig.mk`, emitted as
+`-DMICROPY_LOAD_NATIVE=...`, same pattern as `CIRCUITPY_ENABLE_MPY_NATIVE`.
+A board turns it on with `CIRCUITPY_LOAD_NATIVE = 1` in `mpconfigboard.mk`
+(the M0 and M4 moved from the header define to this; the M0 links to the same
+253,048 bytes either way). Commit `1fae66ee3f` on `loader-only-native`.
+
+### ARM: same core patch, no new coupling
+
+| Board | Stock | Loader-only | Full emitter | Shim (viper, ms) |
+|---|---|---|---|---|
+| Metro RP2040 | 982,576 | +3,036 (+0.3%) | +48,296 (+4.9%) | 422 |
+| Metro RP2350 | 917,704 | +2,876 (+0.3%) | +45,548 (+5.0%) | 281 |
+| Feather nRF52840 | 659,856 | +2,432 (+0.4%) | +28,352 (+4.3%) | 844 |
+| Feather STM32F405 | 671,800 | +2,444 (+0.4%) | +28,352 (+4.2%) | 437 |
+
+`firmware.bin` bytes, same tree and GCC 14.2.1 per board. Loader-only images
+have `mp_native_relocate` and no `emit_native_thumb` / `asm_thumb_` symbols
+(the RP2 emitter is bigger because that port builds without LTO). All four
+flashed and run: RP2350 by 1200-baud touch and UF2, nRF52840 and STM32F405
+over SWD (`bravo:~/turbo/loader-run.sh`). Board flags committed as
+`11b6fe3cde`. The `@native` (non-viper) `pixels.native.mpy` also runs on all
+six ARM boards (`native-mpy-check.sh`): RP2040 4777, RP2350 2378, nRF52840
+7465, STM32F405 2832, M4 3567, M0 23570 ms, checksum 407644, matching the
+farm table's `@native` column.
+
+### Xtensa: three more couplings (`esp32-native` branch)
+
+Cherry-picked the two core commits (without the SAMD board hunks) onto
+`esp32-native`, then commit `75a3403038`:
+
+- `py/persistentcode.h`: the `xtensa`, `xtensawin` and `rv32` branches of the
+  `MPY_FEATURE_ARCH` chain now also fire for `MICROPY_LOAD_NATIVE` on the
+  matching compiler target (`__xtensa__`, `__XTENSA_WINDOWED_ABI__`,
+  `__riscv && __riscv_xlen == 32`), as the thumb branch already did.
+- `ports/espressif/mpconfigport.h` and `supervisor/port.c`: the
+  executable-RAM commit hook (`MP_PLAT_COMMIT_EXEC` ->
+  `esp_native_code_commit`) and its VM-teardown free were gated on
+  `CIRCUITPY_ENABLE_MPY_NATIVE`. The loader path calls it too (relocated code
+  first lands in the GC heap or PSRAM, neither executable). Without it the
+  S3 link fails on `persistentcode.o`.
+- `ports/espressif/Makefile` and `tools/check-sdkconfig.py`: the
+  `sdkconfig-native.defaults` (`CONFIG_ESP_SYSTEM_MEMPROT=n`) and its guard
+  now apply for either flag.
+- `py/mpconfig.h` (`8c69e71fa9`, also `a80fa21afb` on `loader-only-native`):
+  `MICROPY_EMIT_NATIVE_PRELUDE_SEPARATE_FROM_MACHINE_CODE` was
+  `(MICROPY_EMIT_XTENSAWIN)` with no `#ifndef`, so the loader-only build got 0
+  and `persistentcode.c` read the prelude of every loaded `@native` `.mpy`
+  byte-wise out of IRAM. Windowed Xtensa cannot: the first call of a native
+  (non-viper) function took a LoadStoreError and the board reset, which the
+  gate saw as the tty vanishing during `mandel_nat`. Viper functions carry no
+  prelude, so the viper shim had passed on both boards and hidden it. Now
+  keyed on `MICROPY_EMIT_XTENSAWIN || (MICROPY_LOAD_NATIVE &&
+  defined(__XTENSA_WINDOWED_ABI__))`. Lesson for the ESP32-C5 and any other
+  port: the shim exercises viper only; run a `@native` `.mpy` too.
+
+| Board | Loader-only | Full emitter | Shim (viper, ms) |
+|---|---|---|---|
+| Metro ESP32-S3 | 2,007,920 (4,672 under stock: memprot code out) | 2,028,320 | 186 |
+| Metro ESP32-S2 | 1,649,744 | 1,664,768 | 225 |
+
+Both flashed app-only with esptool at `0x10000` (`esp-flash-app-any.sh S2|S3`;
+`on_next_reset(BOOTLOADER)` lands both in ROM download mode, `303a:0002` /
+`303a:0009`, not TinyUF2). Filesystems intact. Board flags committed as `b33b3e726b`. The C5 branch
+(`esp32-native-c5`) still needs a rebase onto this; the RISC-V arch line is
+in but not built.
+
+### ESP regression gate, loader-only, 2026-09-06
+
+`esp-run.sh` on both boards after the prelude fix (`8c69e71fa9`):
+
+| | ESP32-S3 | ESP32-S2 |
+|---|---|---|
+| mandel float / int bytecode, us | 4,873,718 / 3,410,034 | 7,506,958 / 4,328,735 |
+| mandel `@native` / `@viper` .mpy, us | 1,692,321 / 171,783 | 2,106,689 / 205,780 |
+| on-board `@viper` compile | SyntaxError (expected) | SyntaxError (expected) |
+| wrong-arch .mpy / 920 KB viper | ValueError / MemoryError, alive | ValueError / MemoryError, alive |
+| burn set | 40/40 | 40/40 |
+| pidigits score, loader-only | 932 to 940 (3 runs) | 450 (3 runs, spread 0.2%) |
+| pidigits score, stock 10.3.0 | 870 to 887 | 486 to 487 |
+| pidigits score, emitter build | not measured | 546 to 548 |
+
+Before the prelude fix the gate had caught the native fault (tty vanished
+during `mandel_nat` on both boards). Viper is 8% faster on the S3 than on
+the emitter build (172 vs 186 ms); the S2 is unchanged (206 ms).
+
+**Open: S2 pidigits.** Four S2 images whose bytecode mandelbrot agrees to
+0.1% give pidigits 481 (first loader image, `be5c582bff`), 450 (current
+loader image), 486 (stock, `CIRCUITPY_LOAD_NATIVE=0` on this tree) and 547
+(emitter image, 09-05). So the current loader-only S2 is 7.5% below stock
+on this one bignum-heavy benchmark, and the previous loader image was 1%
+below it. The S2 has no PSRAM and runs code from flash through an 8 KB
+instruction cache, so code placement moves cache-sensitive workloads by
+this much between otherwise equivalent images; that is the likely
+mechanism and it is not proven. The S3 (PSRAM, larger cache) shows the
+opposite sign: loader-only is 6% above stock. Worth a linker-map
+comparison of the `mpz_*` hot functions before any upstream claim about
+S2 bytecode speed.
+
+### Not yet converted
+
+The two Zephyr boards (nRF54L15/LM20 on `verify/nrf54l-all`, EK-RA8D1 on
+`ra8d1-turbo`) and the ESP32-C5. Same core patch; the `emitglue.c` I-cache
+hunk is needed by the loader path there too, so it stays and gets attributed
+rather than split out.
+
 ## Status
 
 - [x] Patch written (10 files), on the `cp-1030` (10.3.0) tree
@@ -255,10 +372,18 @@ SWD is the reliable path here.
 - [x] Source `@viper` rejected, confirming the emitter is out
 - [x] Committed to `mikeysklar/circuitpython` branch `loader-only-native` (`af32cbcb36` core, `6fdfdcc7ca` M0 board)
 - [x] M0 Express fits (648 B free, safemode.py dropped) and runs host-compiled armv6m viper at 1,014 ms
-- [ ] Split the I-cache lines out of `emitglue.c` before an upstream PR
+- [x] `CIRCUITPY_LOAD_NATIVE` make flag (`1fae66ee3f`)
+- [x] RP2040, RP2350, nRF52840, STM32F405 built, flashed, shim verified, flags committed (`11b6fe3cde`)
+- [x] ESP32-S2 and S3 on `esp32-native`: arch selection, commit-exec hook and memprot gates on the flag (`75a3403038`), flags committed (`b33b3e726b`), shim verified
+- [x] ESP regression gate on loader-only (`bravo:~/turbo/esp-results/{S3,S2}-loader2`): see below
+- [ ] Zephyr boards and the C5 branch
+- [ ] Split the I-cache lines out of `emitglue.c` before an upstream PR (or keep and attribute: the loader needs them on Zephyr)
 - [ ] Decide upstreamability (clean single macro; a candidate for Adafruit)
 
-Board state after: both the M4 AirLift and the M0 Express are running the
-loader-only firmware with the test `.mpy` files on CIRCUITPY, not the farm idle
-sketch. Backups: `bravo:~/backup-m4-loaderonly-20260905-194241/`,
-`bravo:~/backup-m0-loaderonly-20260905-201331/`.
+Board state after: all eight farm boards run loader-only firmware with the
+shim files on CIRCUITPY, not the farm idle sketch. Backups:
+`bravo:~/backup-m4-loaderonly-20260905-194241/`,
+`bravo:~/backup-m0-loaderonly-20260905-201331/`,
+`bravo:~/turbo/backup-rp2040-loader-20260906-102936/`,
+`bravo:~/turbo/backup-{rp2350,nrf52840,stm32f405}-loader-20260906-*/`;
+the ESP boards kept their filesystems (app-only flash).

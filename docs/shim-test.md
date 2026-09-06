@@ -36,6 +36,40 @@ arch reported, and arch reported but no directory (S2 on the branch firmware). S
 
 Raw output: `bravo:~/turbo/shim/results/`. Manifest: `bravo:~/turbo/shim/lib/turbo/turbo.json`.
 
+## Loader-only firmware, all eight farm boards, 2026-09-06
+
+Same shim, same three files, but every board now runs a loader-only build:
+`CIRCUITPY_LOAD_NATIVE=1`, no `CIRCUITPY_ENABLE_MPY_NATIVE`, so the on-board
+emitter is out of the image and only the native `.mpy` loader is in. Driven
+by `bravo:~/turbo/loader-run.sh` (ARM), `esp-loader-run.sh` (Xtensa) and
+`shim-only-run.sh` (boards already flashed). Every board: checksum 407644,
+`@micropython.viper` from source raises `SyntaxError: invalid micropython
+decorator`, and a `.mpy` for another arch raises `ValueError: incompatible
+.mpy arch`.
+
+| Board | Firmware | `turbo.arch` | ms, loader-only | ms, full emitter (09-05) | Flash over stock |
+|---|---|---|---|---|---|
+| Metro M0 Express | `loader-only-native` | `armv6m` | 1177 | n/a (does not fit) | +1,868 B, safemode.py dropped |
+| Metro RP2040 | `loader-only-native` | `armv6m` | 422 | 422 | +3,036 B |
+| Metro M4 AirLift | `loader-only-native` | `armv7emsp` | 463 | n/a (does not fit) | +2,776 B |
+| Metro RP2350 | `loader-only-native` | `armv7emsp` | 281 | 281 | +2,876 B |
+| Feather nRF52840 | `loader-only-native` | `armv7emsp` | 844 | 848 | +2,432 B |
+| Feather STM32F405 | `loader-only-native` | `armv7emsp` | 437 | 437 | +2,444 B |
+| Metro ESP32-S2 | `esp32-native` | `xtensawin` | 225 | not run with the arch dir | 15,024 B under the emitter build |
+| Metro ESP32-S3 | `esp32-native` | `xtensawin` | 186 | 186 | 4,672 B under stock (memprot code out), 20,400 B under the emitter build |
+
+The first Xtensa loader images passed this shim and still reset on any
+`@native` (non-viper) `.mpy`: the prelude-separation rule for windowed Xtensa
+was keyed on the emitter macro (`loader-only-samd.md`, "three more
+couplings"). The shim only exercises viper; the ESP regression gate caught it.
+Fixed in `8c69e71fa9`; the S3 and S2 now also run `mandel_nat.mpy` (1,692 and
+2,107 ms).
+
+Loader-only and full-emitter times are the same because the machine code is
+the same: `mpy-cross` made it either way, the board only relocates and calls
+it. The M0 and M4 shim times are above their `mandel_vip.mpy` times (1,014
+and 431 ms) by the shim's import overhead on a slow flash filesystem.
+
 ## `pack` end to end, Metro RP2350, 2026-09-05
 
 Firmware from release `cp-10.3.0` on this repo (CI build, GCC 15.2.1), project
