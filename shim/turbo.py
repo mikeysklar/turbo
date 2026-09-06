@@ -1,6 +1,7 @@
 # turbo: run compiled .mpy where the firmware can, source everywhere else.
-# Pure Python. Puts one directory at the front of sys.path based on the
-# native arch the firmware reports in sys.implementation._mpy.
+# Pure Python. Puts the native arch directory (from sys.implementation._mpy)
+# at the front of sys.path, with /src right behind it, so a module missing
+# from the arch directory still imports from source.
 import os
 import sys
 
@@ -28,16 +29,21 @@ turbo = _Turbo()
 
 
 def _pick():
+    paths = ["/src"]
     if arch:
         d = "/lib/turbo/" + arch
         try:
             os.stat(d)
-            return d
+            paths.insert(0, d)
         except OSError:
             pass
-    return "/src"
+    return paths
 
 
-path = _pick()
-if sys.path[0] != path:
-    sys.path.insert(0, path)
+paths = _pick()
+path = paths[0]  # where a compiled module comes from, if any; kept for callers
+for _p in reversed(paths):
+    if _p in sys.path:
+        sys.path.remove(_p)
+    sys.path.insert(0, _p)
+del _p
