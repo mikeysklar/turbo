@@ -250,7 +250,7 @@ SWD is the reliable path here.
 
 ## All eight farm boards, 2026-09-06
 
-Decision from Phil and Limor (2026-09-06): drop the on-board emitter, keep the
+Decision (2026-09-06): drop the on-board emitter, keep the
 loader, keep viper. Turbo compiles on the host with `mpy-cross`; the board
 only ever loads `.mpy`. Viper is a typing mode inside the same code generator
 as `@native`, not the inline assembler, and it is where the 20 to 72x comes

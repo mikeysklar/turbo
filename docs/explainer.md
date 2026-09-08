@@ -1,7 +1,7 @@
 # Turbo, explained plainly
 
-Written for Limor, 2026-09-06, to answer the questions from the playground and
-to give a forwards-and-backwards picture before Tuesday. Everything here is
+Written 2026-09-06 to give a forwards-and-backwards picture of the project
+and to answer two questions that keep coming up. Everything here is
 measured on the farm or read from the source; where something is a plan, not a
 fact, it says so.
 
@@ -45,8 +45,8 @@ wrong CPU with a `ValueError`; it never faults.
 | fits SAMD21 / SAMD51 | not relevant | n/a | yes, both |
 | same project runs on a board without the feature | n/a | n/a | yes, from source, via the shim |
 
-"CircuitPython + turbo" here is the loader-only direction you and Phil chose
-on 2026-09-06. The middle column has three exceptions in the tree, all
+"CircuitPython + turbo" here is the loader-only direction chosen for the
+project on 2026-09-06. The middle column has three exceptions in the tree, all
 third-party boards that set the flag themselves: Winterbloom Sol, and the two
 Makerdiary nRF52840 boards. No Adafruit board does.
 
@@ -73,7 +73,7 @@ Two facts about switch 2 worth knowing:
   compiler ran on the board or on the host. The farm numbers below were
   reproduced on the loader-only images within a few percent.
 
-## Your two questions
+## Two questions
 
 **"On tight platforms like SAMD51 and SAMD21 we will not be able to use the
 decorators in `code.py`, only in `.mpy`?"**
